@@ -1,0 +1,139 @@
+{
+  "projectType": "framework",
+  "projectName": "Hive",
+  "projectDescription": "AI-native backend framework with preconfigured database, auth, real-time, and event-driven architecture for rapid product development.",
+  "theme": "aspen",
+  "primaryColor": "#F59E0B",
+  "lightColor": "#FCD34D",
+  "darkColor": "#D97706",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/resources",
+              "concepts/schemas",
+              "concepts/endpoints",
+              "concepts/handlers",
+              "concepts/auto-sync"
+            ]
+          },
+          {
+            "group": "Building with AI",
+            "pages": [
+              "ai/overview",
+              "ai/commands",
+              "ai/cursor-integration"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/creating-resources",
+              "guides/building-endpoints",
+              "guides/database-operations",
+              "guides/event-handlers",
+              "guides/middlewares",
+              "guides/authentication",
+              "guides/real-time",
+              "guides/background-jobs",
+              "guides/schedulers"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/overview",
+              "deployment/docker",
+              "deployment/environment-variables"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "CLI",
+            "pages": [
+              "api/cli/init",
+              "api/cli/run",
+              "api/cli/prepare",
+              "api/cli/deploy",
+              "api/cli/install"
+            ]
+          },
+          {
+            "group": "Database Services",
+            "pages": [
+              "api/database/services",
+              "api/database/queries",
+              "api/database/transactions"
+            ]
+          },
+          {
+            "group": "Built-in Middlewares",
+            "pages": [
+              "api/middlewares/overview",
+              "api/middlewares/is-authorized",
+              "api/middlewares/allow-no-auth",
+              "api/middlewares/should-exist",
+              "api/middlewares/attach-user"
+            ]
+          },
+          {
+            "group": "Schemas",
+            "pages": [
+              "api/schemas/db-schema",
+              "api/schemas/validation",
+              "api/schemas/secure-fields"
+            ]
+          },
+          {
+            "group": "Helpers",
+            "pages": [
+              "api/helpers/config",
+              "api/helpers/logger",
+              "api/helpers/db-utilities"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Resource-based architecture with convention over configuration",
+    "Auto-generated database services from Zod schemas",
+    "Event-driven handlers that react to database changes",
+    "Automatic syncing of embedded document references",
+    "AI-native development with Cursor commands",
+    "Built-in auth, real-time, queues, and scheduler",
+    "CLI for scaffolding and deployment"
+  ],
+  "publicApiSurface": [
+    "hive init - Initialize new project",
+    "hive run - Start development server",
+    "hive prepare - Build for production",
+    "hive deploy - Deploy to Hive Cloud",
+    "hive install - Install plugins",
+    "db.services.{resource} - Auto-generated database services",
+    "add-resource - AI command to create resources",
+    "add-endpoint - AI command to create endpoints",
+    "add-handler - AI command to create event handlers",
+    "add-middleware - AI command to create middlewares",
+    "add-service - AI command to create services",
+    "add-scheduler - AI command to create cron jobs"
+  ]
+}
