@@ -1,0 +1,298 @@
+---
+title: shouldNotExist
+description: Validate that a resource doesn't already exist before proceeding
+---
+
+## Overview
+
+The `shouldNotExist` middleware checks that a resource doesn't already exist in the database. It's the inverse of `shouldExist` - commonly used for create endpoints to prevent duplicates.
+
+## Usage
+
+```javascript
+import shouldNotExist from 'middlewares/shouldNotExist';
+
+export const middlewares = [shouldNotExist('users')];
+```
+
+The middleware throws a `400 Bad Request` error if a matching resource is found.
+
+## Parameters
+
+<ParamField path="resourceName" type="string" required>
+  The name of the resource to check (e.g., 'users', 'tasks', 'projects')
+</ParamField>
+
+<ParamField path="options" type="object">
+  Configuration options for the check
+  
+  <Expandable title="properties">
+    <ParamField path="criteria" type="function" default="(ctx) => ({ name: ctx.validatedData.name })">
+      Function that returns the query criteria. Receives Koa context and should return a MongoDB query object.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Context state
+
+### Input
+
+<ParamField path="ctx.validatedData" type="object">
+  Validated request data used by default criteria function
+</ParamField>
+
+### Output
+
+If the resource exists:
+- Throws `400 Bad Request` with message: `"${ResourceName} already exists"`
+
+If the resource doesn't exist:
+- Calls `next()` to continue to the handler
+
+## Examples
+
+### Basic usage (check by name)
+
+Prevent duplicate resources by name:
+
+```javascript
+import { z } from 'zod';
+import shouldNotExist from 'middlewares/shouldNotExist';
+import db from 'db';
+
+const projectsService = db.services.projects;
+
+export const middlewares = [shouldNotExist('projects')];
+
+export const requestSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+});
+
+export const handler = async (ctx) => {
+  const project = await projectsService.create(ctx.validatedData);
+  return project;
+};
+
+export const endpoint = {
+  url: '/',
+  method: 'post',
+};
+```
+
+Request with duplicate name:
+```bash
+curl -X POST http://localhost:3001/projects \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Existing Project"}'
+```
+
+Response:
+```json
+{
+  "error": "Projects already exists"
+}
+```
+
+### Custom criteria (check by email)
+
+Check for unique email addresses:
+
+```javascript
+import shouldNotExist from 'middlewares/shouldNotExist';
+
+export const middlewares = [
+  shouldNotExist('users', {
+    criteria: (ctx) => ({ email: ctx.validatedData.email })
+  })
+];
+
+export const requestSchema = z.object({
+  email: z.string().email(),
+  fullName: z.string(),
+  password: z.string(),
+});
+```
+
+### Multiple field criteria
+
+Check for duplicates across multiple fields:
+
+```javascript
+export const middlewares = [
+  shouldNotExist('tasks', {
+    criteria: (ctx) => ({
+      title: ctx.validatedData.title,
+      projectId: ctx.validatedData.projectId
+    })
+  })
+];
+```
+
+This ensures no two tasks have the same title within a project.
+
+### Complex criteria
+
+Use any MongoDB query operators:
+
+```javascript
+export const middlewares = [
+  shouldNotExist('domains', {
+    criteria: (ctx) => ({
+      $or: [
+        { domain: ctx.validatedData.domain },
+        { aliases: ctx.validatedData.domain }
+      ]
+    })
+  })
+];
+```
+
+### Check with different field
+
+Check against a different field than what's in the request:
+
+```javascript
+export const middlewares = [
+  shouldNotExist('slugs', {
+    criteria: (ctx) => ({
+      slug: ctx.validatedData.title.toLowerCase().replace(/\s+/g, '-')
+    })
+  })
+];
+```
+
+## Implementation
+
+From `src/middlewares/shouldNotExist.js`:
+
+```javascript
+import _ from 'lodash';
+import db from 'db';
+
+export default (
+  resourceName,
+  { criteria = (ctx) => ({ name: ctx.validatedData.name }) } = {}
+) => {
+  return async (ctx, next) => {
+    const doc = await db.services[resourceName].findOne(criteria(ctx));
+
+    if (doc) {
+      ctx.throw(400, {
+        message: `${_.capitalize(resourceName)} already exists`,
+      });
+    } else {
+      await next();
+    }
+  };
+};
+```
+
+## Error response
+
+When a resource exists:
+
+```json
+{
+  "error": "Users already exists",
+  "statusCode": 400
+}
+```
+
+The error message is automatically capitalized from the resource name.
+
+## Common patterns
+
+<AccordionGroup>
+  <Accordion title="Unique usernames">
+    ```javascript
+    shouldNotExist('users', {
+      criteria: (ctx) => ({ username: ctx.validatedData.username })
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Unique team names per user">
+    ```javascript
+    shouldNotExist('teams', {
+      criteria: (ctx) => ({
+        name: ctx.validatedData.name,
+        ownerId: ctx.state.user._id
+      })
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Unique slugs">
+    ```javascript
+    import slug from 'slug';
+
+    shouldNotExist('posts', {
+      criteria: (ctx) => ({
+        slug: slug(ctx.validatedData.title)
+      })
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Case-insensitive check">
+    ```javascript
+    shouldNotExist('categories', {
+      criteria: (ctx) => ({
+        name: { 
+          $regex: new RegExp(`^${ctx.validatedData.name}$`, 'i') 
+        }
+      })
+    })
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Best practices
+
+<Steps>
+  <Step title="Use specific criteria">
+    Define exact criteria for what constitutes a duplicate. Avoid overly broad checks.
+  </Step>
+
+  <Step title="Combine with validation">
+    Use both Zod schema validation and `shouldNotExist` for comprehensive input validation.
+  </Step>
+
+  <Step title="Consider unique indexes">
+    For high-traffic endpoints, add MongoDB unique indexes to prevent race conditions:
+    ```javascript
+    await db.services.users.createIndex({ email: 1 }, { unique: true });
+    ```
+  </Step>
+
+  <Step title="Provide helpful errors">
+    The default error is generic. Consider custom validation in your handler for more specific messages.
+  </Step>
+</Steps>
+
+## Comparison with shouldExist
+
+| Feature | shouldNotExist | shouldExist |
+|---------|---------------|-------------|
+| Purpose | Prevent duplicates | Load existing resources |
+| When to use | Create endpoints | Update/delete endpoints |
+| If found | Throws 400 error | Loads into ctx.state |
+| If not found | Continues | Throws 404 error |
+
+## Related middlewares
+
+<CardGroup cols={2}>
+  <Card title="shouldExist" icon="database" href="/api/middlewares/should-exist">
+    Load and validate resources exist
+  </Card>
+  <Card title="validate" icon="check" href="/api/schemas/validation">
+    Validate request data with Zod
+  </Card>
+</CardGroup>
+
+## See also
+
+- [Middleware system](/api/middlewares/overview)
+- [Database services](/api/database/services)
+- [Creating resources](/guides/creating-resources)

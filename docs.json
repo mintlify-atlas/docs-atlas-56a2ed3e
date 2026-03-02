@@ -84,7 +84,8 @@
               "api/cli/run",
               "api/cli/prepare",
               "api/cli/deploy",
-              "api/cli/install"
+              "api/cli/install",
+              "api/cli/login"
             ]
           },
           {
@@ -102,7 +103,9 @@
               "api/middlewares/is-authorized",
               "api/middlewares/allow-no-auth",
               "api/middlewares/should-exist",
-              "api/middlewares/attach-user"
+              "api/middlewares/should-not-exist",
+              "api/middlewares/attach-user",
+              "api/middlewares/upload-file"
             ]
           },
           {

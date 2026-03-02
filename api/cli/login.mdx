@@ -1,0 +1,200 @@
+---
+title: hive login
+description: Authenticate with Hive Cloud for deployment and plugin access
+---
+
+## Overview
+
+The `hive login` command authenticates you with Hive Cloud, allowing you to deploy projects and access cloud features. It uses email-based authentication with one-time codes.
+
+## Usage
+
+```bash
+hive login
+```
+
+This command has no arguments or options. It runs an interactive authentication flow.
+
+## Authentication flow
+
+<Steps>
+  <Step title="Start login">
+    Run the command:
+    ```bash
+    hive login
+    ```
+  </Step>
+
+  <Step title="Enter email">
+    You'll be prompted for your email:
+    ```
+    ? Please enter your email: you@example.com
+    ```
+  </Step>
+
+  <Step title="Check email">
+    A one-time code will be sent to your email address.
+  </Step>
+
+  <Step title="Enter code">
+    Enter the code from your email:
+    ```
+    ? One time code (sent to you@example.com): 123456
+    ```
+  </Step>
+
+  <Step title="Save token">
+    On success, you'll receive a token:
+    ```
+    You're now logged into Hive! Welcome 🐝
+    
+    Important: to save access add HIVE_TOKEN to your env variables and your ~/.zshrc file
+
+    export HIVE_TOKEN=your-token-here
+    ```
+  </Step>
+</Steps>
+
+## Already logged in
+
+If you've already set `HIVE_TOKEN` in your environment, the command will verify your authentication:
+
+```bash
+hive login
+```
+
+Output:
+```
+Already logged in! { email: 'you@example.com', fullName: 'Your Name' }
+```
+
+## Environment variable
+
+After logging in, save the token to your shell configuration:
+
+<Tabs>
+  <Tab title="zsh">
+    ```bash ~/.zshrc
+    export HIVE_TOKEN=your-token-here
+    ```
+
+    Then reload:
+    ```bash
+    source ~/.zshrc
+    ```
+  </Tab>
+
+  <Tab title="bash">
+    ```bash ~/.bashrc
+    export HIVE_TOKEN=your-token-here
+    ```
+
+    Then reload:
+    ```bash
+    source ~/.bashrc
+    ```
+  </Tab>
+
+  <Tab title=".env">
+    For project-specific use:
+    ```bash .env
+    HIVE_TOKEN=your-token-here
+    ```
+  </Tab>
+</Tabs>
+
+## What it enables
+
+The `HIVE_TOKEN` is used by:
+
+- `hive deploy` - Deploy to Hive Cloud
+- `hive install` - Install private plugins from Hive Cloud
+- Future cloud features
+
+<Note>
+  The token is stored in environment variables, not in files. Keep it secure and don't commit it to version control.
+</Note>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Didn't receive the code">
+    - Check your spam folder
+    - Verify you entered the correct email
+    - Try again after a few minutes
+  </Accordion>
+
+  <Accordion title="Code expired or invalid">
+    The code expires after 10 minutes. Request a new code by running `hive login` again.
+  </Accordion>
+
+  <Accordion title="Token not working">
+    The token may have expired. Run `hive login` again to get a fresh token.
+  </Accordion>
+
+  <Accordion title="Network errors">
+    The login command requires internet access to reach `hive-api-test.paralect.co`. Check your connection and firewall settings.
+  </Accordion>
+</AccordionGroup>
+
+## Implementation
+
+The login flow is implemented in `cli/hive.js:144-190`:
+
+```javascript
+program
+  .command('login')
+  .description('Login into Hive Cloud')
+  .action(async () => {
+    if (process.env.HIVE_TOKEN) {
+      const user = (await axios({
+        url: `https://hive-api-test.paralect.co/users/me`, 
+        method: 'get', 
+        headers: {
+          'Authorization': `Bearer ${process.env.HIVE_TOKEN}`
+        }
+      })).data;
+
+      console.log(`Already logged in!`, user);
+      return;
+    }
+
+    const { email } = await inquirer.prompt([{
+      type: 'input',
+      name: 'email',
+      message: 'Please enter your email:'
+    }]);
+
+    await axios({ 
+      url: `https://hive-api-test.paralect.co/auth/login-code`, 
+      method: 'post', 
+      data: { email } 
+    });
+
+    const { code } = await inquirer.prompt([{
+      type: 'input',
+      name: 'code',
+      message: `One time code (sent to ${email})`,
+    }]);
+
+    const { token, user } = (await axios({ 
+      url: `https://hive-api-test.paralect.co/auth/verify-login`, 
+      method: 'post', 
+      data: { email, code } 
+    })).data;
+
+    console.log(`
+      You're now logged into Hive! Welcome 🐝
+      
+      Important: to save access add HIVE_TOKEN to your env variables
+      
+      export HIVE_TOKEN=${token}
+    `);
+  });
+```
+
+## See also
+
+- [hive deploy](/api/cli/deploy) - Deploy to Hive Cloud
+- [hive install](/api/cli/install) - Install plugins
+- [Environment variables](/deployment/environment-variables) - Configure your environment

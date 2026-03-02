@@ -1,0 +1,465 @@
+---
+title: uploadFile
+description: Handle file uploads with multer memory storage
+---
+
+## Overview
+
+The `uploadFile` middleware enables file uploads in your endpoints using `@koa/multer`. Files are stored in memory as buffers, ready for processing or upload to cloud storage.
+
+## Usage
+
+```javascript
+import uploadFile from 'middlewares/uploadFile';
+
+export const middlewares = [uploadFile.single('file')];
+
+export const handler = async (ctx) => {
+  const file = ctx.file; // Access uploaded file
+  
+  // file.buffer contains the file data
+  // file.originalname contains the filename
+  // file.mimetype contains the content type
+  
+  return { uploaded: true, filename: file.originalname };
+};
+```
+
+## Multer methods
+
+The middleware is a configured multer instance with memory storage. Use these methods:
+
+<ParamField path=".single(fieldName)" type="function">
+  Accept a single file with the given field name. The file will be available at `ctx.file`.
+  
+  ```javascript
+  uploadFile.single('avatar')
+  ```
+</ParamField>
+
+<ParamField path=".array(fieldName, maxCount)" type="function">
+  Accept an array of files with the given field name. Files will be available at `ctx.files`.
+  
+  ```javascript
+  uploadFile.array('photos', 10) // Max 10 files
+  ```
+</ParamField>
+
+<ParamField path=".fields(fields)" type="function">
+  Accept multiple fields with different names. Files organized by field name in `ctx.files`.
+  
+  ```javascript
+  uploadFile.fields([
+    { name: 'avatar', maxCount: 1 },
+    { name: 'gallery', maxCount: 8 }
+  ])
+  ```
+</ParamField>
+
+<ParamField path=".none()" type="function">
+  Accept only text fields, no files. Useful for multipart/form-data without files.
+  
+  ```javascript
+  uploadFile.none()
+  ```
+</ParamField>
+
+## File object structure
+
+When a file is uploaded, it's available on `ctx.file` or `ctx.files` with these properties:
+
+<ResponseField name="fieldname" type="string">
+  Field name specified in the form
+</ResponseField>
+
+<ResponseField name="originalname" type="string">
+  Name of the file on the user's computer
+</ResponseField>
+
+<ResponseField name="encoding" type="string">
+  Encoding type of the file (e.g., "7bit")
+</ResponseField>
+
+<ResponseField name="mimetype" type="string">
+  MIME type of the file (e.g., "image/jpeg", "application/pdf")
+</ResponseField>
+
+<ResponseField name="buffer" type="Buffer">
+  The file data as a Buffer. This is the actual file content in memory.
+</ResponseField>
+
+<ResponseField name="size" type="number">
+  Size of the file in bytes
+</ResponseField>
+
+## Examples
+
+### Single file upload
+
+Upload a user avatar:
+
+```javascript
+import { z } from 'zod';
+import uploadFile from 'middlewares/uploadFile';
+import isAuthorized from 'middlewares/isAuthorized';
+import db from 'db';
+
+export const middlewares = [isAuthorized, uploadFile.single('avatar')];
+
+export const requestSchema = z.object({});
+
+export const handler = async (ctx) => {
+  const file = ctx.file;
+  
+  if (!file) {
+    ctx.throw(400, 'No file uploaded');
+  }
+
+  // Validate file type
+  const allowedTypes = ['image/jpeg', 'image/png', 'image/gif'];
+  if (!allowedTypes.includes(file.mimetype)) {
+    ctx.throw(400, 'Invalid file type. Only JPEG, PNG, and GIF allowed.');
+  }
+
+  // Validate file size (max 5MB)
+  const maxSize = 5 * 1024 * 1024;
+  if (file.size > maxSize) {
+    ctx.throw(400, 'File too large. Maximum size is 5MB.');
+  }
+
+  // Upload to cloud storage (example with AWS S3)
+  const s3Key = `avatars/${ctx.state.user._id}-${Date.now()}.${file.originalname.split('.').pop()}`;
+  // await uploadToS3(file.buffer, s3Key, file.mimetype);
+
+  // Update user with avatar URL
+  await db.services.users.updateOne(
+    { _id: ctx.state.user._id },
+    (doc) => ({ ...doc, avatarUrl: `https://cdn.example.com/${s3Key}` })
+  );
+
+  return { 
+    uploaded: true, 
+    filename: file.originalname,
+    size: file.size 
+  };
+};
+
+export const endpoint = {
+  url: '/avatar',
+  method: 'post',
+};
+```
+
+Client example:
+```javascript
+const formData = new FormData();
+formData.append('avatar', fileInput.files[0]);
+
+const response = await fetch('http://localhost:3001/users/avatar', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`
+  },
+  body: formData
+});
+```
+
+### Multiple files
+
+Upload multiple images:
+
+```javascript
+import uploadFile from 'middlewares/uploadFile';
+
+export const middlewares = [uploadFile.array('images', 5)];
+
+export const handler = async (ctx) => {
+  const files = ctx.files;
+  
+  if (!files || files.length === 0) {
+    ctx.throw(400, 'No files uploaded');
+  }
+
+  const uploadedFiles = files.map(file => ({
+    name: file.originalname,
+    size: file.size,
+    type: file.mimetype
+  }));
+
+  // Process each file
+  for (const file of files) {
+    // Upload to storage, create thumbnails, etc.
+  }
+
+  return { 
+    uploaded: files.length,
+    files: uploadedFiles 
+  };
+};
+
+export const endpoint = {
+  url: '/gallery',
+  method: 'post',
+};
+```
+
+### Multiple fields
+
+Different file types in one request:
+
+```javascript
+export const middlewares = [
+  uploadFile.fields([
+    { name: 'document', maxCount: 1 },
+    { name: 'attachments', maxCount: 3 }
+  ])
+];
+
+export const handler = async (ctx) => {
+  const document = ctx.files.document?.[0];
+  const attachments = ctx.files.attachments || [];
+
+  if (!document) {
+    ctx.throw(400, 'Document is required');
+  }
+
+  // Process main document
+  // Process attachments
+
+  return {
+    document: document.originalname,
+    attachments: attachments.length
+  };
+};
+```
+
+### CSV import
+
+Parse uploaded CSV:
+
+```javascript
+import uploadFile from 'middlewares/uploadFile';
+import csv from 'csv-parse/sync';
+
+export const middlewares = [uploadFile.single('csv')];
+
+export const handler = async (ctx) => {
+  const file = ctx.file;
+  
+  if (!file) {
+    ctx.throw(400, 'No CSV file uploaded');
+  }
+
+  if (file.mimetype !== 'text/csv') {
+    ctx.throw(400, 'File must be CSV');
+  }
+
+  // Parse CSV
+  const records = csv.parse(file.buffer.toString(), {
+    columns: true,
+    skip_empty_lines: true
+  });
+
+  // Import records
+  const imported = [];
+  for (const record of records) {
+    const created = await db.services.contacts.create({
+      name: record.name,
+      email: record.email,
+      phone: record.phone
+    });
+    imported.push(created);
+  }
+
+  return { 
+    imported: imported.length,
+    total: records.length 
+  };
+};
+```
+
+## Implementation
+
+From `src/middlewares/uploadFile.js`:
+
+```javascript
+import multer from '@koa/multer';
+
+const storage = multer.memoryStorage();
+
+export default multer({ storage });
+```
+
+The middleware uses memory storage, so files are stored as Buffers in RAM. This is ideal for:
+- Small to medium files
+- Files that will be immediately processed or uploaded elsewhere
+- Serverless environments
+
+## Memory considerations
+
+<Warning>
+  Files are stored in memory. For large files or high traffic, consider:
+  - Limiting file sizes with multer options
+  - Using disk storage for large files
+  - Processing files in background jobs
+  - Streaming directly to cloud storage
+</Warning>
+
+## Configuration options
+
+You can create a custom configured multer instance:
+
+```javascript
+import multer from '@koa/multer';
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB
+    files: 5 // Max 5 files
+  },
+  fileFilter: (req, file, cb) => {
+    // Only accept images
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only images allowed'));
+    }
+  }
+});
+
+export const middlewares = [upload.single('photo')];
+```
+
+## Common patterns
+
+<AccordionGroup>
+  <Accordion title="Image validation and resizing">
+    ```javascript
+    import sharp from 'sharp';
+
+    export const handler = async (ctx) => {
+      const file = ctx.file;
+      
+      // Resize image
+      const resized = await sharp(file.buffer)
+        .resize(800, 600, { fit: 'inside' })
+        .jpeg({ quality: 80 })
+        .toBuffer();
+
+      // Upload resized image
+      // await uploadToS3(resized, key, 'image/jpeg');
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="PDF processing">
+    ```javascript
+    import pdf from 'pdf-parse';
+
+    export const handler = async (ctx) => {
+      const file = ctx.file;
+      
+      if (file.mimetype !== 'application/pdf') {
+        ctx.throw(400, 'Only PDF files allowed');
+      }
+
+      const data = await pdf(file.buffer);
+      
+      return {
+        pages: data.numpages,
+        text: data.text
+      };
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Direct S3 upload">
+    ```javascript
+    import AWS from 'aws-sdk';
+
+    const s3 = new AWS.S3();
+
+    export const handler = async (ctx) => {
+      const file = ctx.file;
+      
+      const result = await s3.upload({
+        Bucket: 'my-bucket',
+        Key: `uploads/${Date.now()}-${file.originalname}`,
+        Body: file.buffer,
+        ContentType: file.mimetype
+      }).promise();
+
+      return { url: result.Location };
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Virus scanning">
+    ```javascript
+    import clamav from 'clamav.js';
+
+    export const handler = async (ctx) => {
+      const file = ctx.file;
+      
+      // Scan for viruses
+      const isClean = await clamav.scan(file.buffer);
+      
+      if (!isClean) {
+        ctx.throw(400, 'File failed security scan');
+      }
+
+      // Process safe file
+    };
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Error handling
+
+```javascript
+export const handler = async (ctx) => {
+  try {
+    const file = ctx.file;
+    
+    if (!file) {
+      ctx.throw(400, 'No file uploaded');
+    }
+
+    // Process file
+    
+  } catch (error) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      ctx.throw(400, 'File too large');
+    }
+    if (error.code === 'LIMIT_FILE_COUNT') {
+      ctx.throw(400, 'Too many files');
+    }
+    throw error;
+  }
+};
+```
+
+## Testing
+
+Test file uploads with curl:
+
+```bash
+curl -X POST http://localhost:3001/upload \
+  -H "Authorization: Bearer token" \
+  -F "file=@/path/to/file.jpg"
+```
+
+Multiple files:
+```bash
+curl -X POST http://localhost:3001/upload \
+  -F "images=@photo1.jpg" \
+  -F "images=@photo2.jpg" \
+  -F "images=@photo3.jpg"
+```
+
+## See also
+
+- [Middleware system](/api/middlewares/overview)
+- [Building endpoints](/guides/building-endpoints)
+- [@koa/multer documentation](https://github.com/koajs/multer)
