@@ -1,0 +1,123 @@
+---
+title: Hive - AI-native backend framework
+description: An AI-native backend framework for engineers who are pissed off about the complexity of modern technology. Build faster with MongoDB, Zod, and auto-sync.
+---
+
+<img
+  className="block dark:hidden"
+  src="/images/hero-light.svg"
+  alt="Hive Hero Light"
+/>
+<img
+  className="hidden dark:block"
+  src="/images/hero-dark.svg"
+  alt="Hive Hero Dark"
+/>
+
+## Build backends faster
+
+Hive preconfigures the entire backend stack: database, cache, queues, event handlers, auth, real-time — so you don't duct-tape different pieces yourself. It dictates a clean architecture that's easy to understand, easy to read, and scales to millions of users.
+
+<CardGroup cols={2}>
+  <Card
+    title="Quickstart"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Get your API running in under 5 minutes with MongoDB, validation, and auth pre-configured
+  </Card>
+  <Card
+    title="Installation"
+    icon="download"
+    href="/installation"
+  >
+    Install Hive globally and learn the prerequisites for getting started
+  </Card>
+  <Card
+    title="API Reference"
+    icon="code"
+    href="/api/cli/init"
+  >
+    Explore the complete API reference for schemas, endpoints, handlers, and services
+  </Card>
+  <Card
+    title="Guides"
+    icon="book-open"
+    href="/guides/creating-resources"
+  >
+    Learn advanced patterns, deployment strategies, and best practices
+  </Card>
+</CardGroup>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="AI-native development" icon="robot">
+    Designed for AI coding assistants. Build with natural language commands in Cursor or any AI editor.
+  </Card>
+  <Card title="Resource pattern" icon="folder-tree">
+    Every feature is a resource with predictable structure: schema, endpoints, handlers, and methods.
+  </Card>
+  <Card title="Auto-sync" icon="arrows-rotate">
+    Embedded documents stay fresh automatically. When a user updates their name, all references update.
+  </Card>
+  <Card title="Zero configuration" icon="bolt">
+    MongoDB, Zod validation, Socket.io, BullMQ, and auth infrastructure — all preconfigured.
+  </Card>
+</CardGroup>
+
+## What's preconfigured
+
+| Concern | Solution |
+|---------|----------|
+| Database | MongoDB with auto-generated services per schema |
+| Validation | Zod schemas, auto-applied to all endpoints |
+| Auth | Token-based auth infrastructure, ready to extend |
+| Events | Persistent handlers that react to DB changes |
+| Real-time | Socket.io with Redis adapter for scaling |
+| Queues | BullMQ for background jobs |
+| Scheduler | Cron-based jobs, no external service needed |
+| Auto-sync | Embedded documents stay fresh automatically |
+
+<Note>
+  Hive uses proven, boring technology: Koa, MongoDB, Zod, Socket.io, BullMQ, and Redis.
+</Note>
+
+## Architecture overview
+
+Every feature in Hive is a **resource** — a folder with a predictable structure:
+
+```
+src/resources/{name}/
+├── {name}.schema.js      # Data shape (required)
+├── endpoints/            # API routes
+├── handlers/             # React to DB events
+└── methods/              # Shared logic
+```
+
+This architecture scales. New developers understand it in minutes. Your codebase stays clean at 10 endpoints or 1000.
+
+## Philosophy
+
+> Technology should solve people's issues, not create new weird ones.
+
+Hive is built for engineers who prioritize:
+- **Product outcomes** over technical purity
+- **Minimal boilerplate** and cognitive overhead
+- **Challenging complexity** — if it doesn't serve the user, remove it
+- **Less code** = better outcome
+
+## Tech stack
+
+Hive is built on proven, production-ready technologies:
+
+- **Koa** — Lightweight Node.js framework
+- **MongoDB** — Document database with flexible schemas
+- **Zod** — TypeScript-first schema validation
+- **Socket.io** — Real-time bidirectional communication
+- **BullMQ** — Redis-based job queues
+- **Redis** — Caching and pub/sub
+
+<Tip>
+  Ready to build? Start with the [quickstart guide](/quickstart) to create your first API endpoint in minutes.
+</Tip>

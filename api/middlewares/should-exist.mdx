@@ -1,0 +1,438 @@
+---
+title: shouldExist
+description: Load and validate resource existence from database
+---
+
+The `shouldExist` middleware loads a resource from the database and attaches it to the request context. It returns `404 Not Found` if the resource doesn't exist.
+
+## Usage
+
+```javascript
+import isAuthorized from 'middlewares/isAuthorized';
+import shouldExist from 'middlewares/shouldExist';
+import { z } from 'zod';
+
+export const middlewares = [
+  isAuthorized,
+  shouldExist('posts')
+];
+
+export const handler = async (ctx) => {
+  // ctx.state.post is guaranteed to exist
+  ctx.body = ctx.state.post;
+};
+
+export const requestSchema = z.object({
+  postId: z.string(),
+});
+
+export const endpoint = {
+  method: "GET",
+  url: "/:postId",
+};
+```
+
+## Parameters
+
+<ParamField path="resourceName" type="string" required>
+  The name of the resource collection (e.g., `'posts'`, `'users'`, `'comments'`)
+</ParamField>
+
+<ParamField path="options" type="object">
+  Configuration options for resource loading
+  
+  <Expandable title="options">
+    <ParamField path="criteria" type="function" default={(ctx) => ({ _id: ctx.params[`${singularize(resourceName)}Id`] })}>
+      Function that returns the MongoDB query criteria
+      
+      **Parameters:**
+      - `ctx` - Koa request context
+      
+      **Returns:** MongoDB query object
+    </ParamField>
+    
+    <ParamField path="ctxName" type="string" default={resourceName}>
+      Name to use when attaching to `ctx.state`. Also attaches singularized version.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## How it works
+
+1. Calls the `criteria` function to build a MongoDB query
+2. Queries `db.services[resourceName].findOne(criteria)`
+3. Attaches the result to `ctx.state[ctxName]` and `ctx.state[singularResource]`
+4. Returns `404` if not found
+5. Continues to next middleware if found
+
+## Default behavior
+
+By default, `shouldExist` looks for a parameter named `{resourceName}Id`:
+
+```javascript
+shouldExist('posts')
+// Expects ctx.params.postId
+// Queries: { _id: ctx.params.postId }
+// Sets: ctx.state.posts and ctx.state.post
+
+shouldExist('comments')
+// Expects ctx.params.commentId
+// Queries: { _id: ctx.params.commentId }
+// Sets: ctx.state.comments and ctx.state.comment
+```
+
+<Note>
+  The middleware automatically singularizes resource names using common English rules (posts → post, categories → category, etc.).
+</Note>
+
+## Context state
+
+### Output
+
+<ParamField path="ctx.state[ctxName]" type="object" required>
+  The loaded resource object
+</ParamField>
+
+<ParamField path="ctx.state[singularName]" type="object" required>
+  Singularized version of the resource (e.g., `ctx.state.post` when loading `'posts'`)
+</ParamField>
+
+## Implementation
+
+```javascript /starter/src/middlewares/shouldExist.js
+import db from 'db';
+
+function singularize(word) {
+  const endings = {
+    ves: 'fe',
+    ies: 'y',
+    i: 'us',
+    zes: 'ze',
+    ses: 's',
+    es: 'e',
+    s: '',
+  };
+  return word.replace(
+    new RegExp(`(${Object.keys(endings).join('|')})$`),
+    (r) => endings[r]
+  );
+}
+
+export default (
+  resourceName,
+  {
+    criteria = (ctx) => ({ _id: ctx.params[`${singularize(resourceName)}Id`] }),
+    ctxName = resourceName,
+  } = {}
+) => {
+  return async (ctx, next) => {
+    const doc = await db.services[resourceName].findOne(criteria(ctx));
+    ctx.state[ctxName] = doc;
+    ctx.state[singularize(resourceName)] = doc;
+
+    if (!doc) {
+      ctx.throw(404, { message: `${resourceName} not found` });
+    } else {
+      await next();
+    }
+  };
+};
+```
+
+## Examples
+
+### Basic usage
+
+```javascript /src/resources/posts/endpoints/get.js
+import shouldExist from 'middlewares/shouldExist';
+import { z } from 'zod';
+
+export const middlewares = [shouldExist('posts')];
+
+export const handler = async (ctx) => {
+  ctx.body = ctx.state.post;
+};
+
+export const requestSchema = z.object({
+  postId: z.string(),
+});
+
+export const endpoint = {
+  method: "GET",
+  url: "/:postId",
+};
+```
+
+### Custom criteria
+
+Load by slug instead of ID:
+
+```javascript /src/resources/posts/endpoints/getBySlug.js
+import shouldExist from 'middlewares/shouldExist';
+import { z } from 'zod';
+
+export const middlewares = [
+  shouldExist('posts', {
+    criteria: (ctx) => ({ slug: ctx.params.slug })
+  })
+];
+
+export const handler = async (ctx) => {
+  ctx.body = ctx.state.post;
+};
+
+export const requestSchema = z.object({
+  slug: z.string(),
+});
+
+export const endpoint = {
+  method: "GET",
+  url: "/by-slug/:slug",
+};
+```
+
+### With ownership check
+
+Ensure the user owns the resource:
+
+```javascript /src/resources/posts/endpoints/update.js
+import isAuthorized from 'middlewares/isAuthorized';
+import shouldExist from 'middlewares/shouldExist';
+import db from 'db';
+import { z } from 'zod';
+
+const postService = db.services.posts;
+
+export const middlewares = [
+  isAuthorized,
+  shouldExist('posts', {
+    criteria: (ctx) => ({
+      _id: ctx.params.postId,
+      authorId: ctx.state.user._id  // Only load if user owns it
+    })
+  })
+];
+
+export const handler = async (ctx) => {
+  const updated = await postService.updateOne(
+    { _id: ctx.state.post._id },
+    ctx.validatedData
+  );
+
+  ctx.body = updated;
+};
+
+export const requestSchema = z.object({
+  postId: z.string(),
+  title: z.string().optional(),
+  content: z.string().optional(),
+});
+
+export const endpoint = {
+  method: "PATCH",
+  url: "/:postId",
+};
+```
+
+### Custom context name
+
+```javascript /src/resources/posts/endpoints/getWithAuthor.js
+import shouldExist from 'middlewares/shouldExist';
+import { z } from 'zod';
+
+export const middlewares = [
+  shouldExist('posts'),
+  shouldExist('users', {
+    criteria: (ctx) => ({ _id: ctx.state.post.authorId }),
+    ctxName: 'author'
+  })
+];
+
+export const handler = async (ctx) => {
+  ctx.body = {
+    ...ctx.state.post,
+    author: ctx.state.author  // Custom name
+  };
+};
+
+export const requestSchema = z.object({
+  postId: z.string(),
+});
+
+export const endpoint = {
+  method: "GET",
+  url: "/:postId/with-author",
+};
+```
+
+### Multiple resources
+
+Load nested resources:
+
+```javascript /src/resources/comments/endpoints/get.js
+import shouldExist from 'middlewares/shouldExist';
+import { z } from 'zod';
+
+export const middlewares = [
+  shouldExist('posts'),
+  shouldExist('comments', {
+    criteria: (ctx) => ({
+      _id: ctx.params.commentId,
+      postId: ctx.state.post._id  // Ensure comment belongs to post
+    })
+  })
+];
+
+export const handler = async (ctx) => {
+  ctx.body = {
+    comment: ctx.state.comment,
+    post: ctx.state.post
+  };
+};
+
+export const requestSchema = z.object({
+  postId: z.string(),
+  commentId: z.string(),
+});
+
+export const endpoint = {
+  method: "GET",
+  url: "/:postId/comments/:commentId",
+};
+```
+
+### Query by multiple fields
+
+```javascript /src/resources/users/endpoints/getByEmail.js
+import isAuthorized from 'middlewares/isAuthorized';
+import shouldExist from 'middlewares/shouldExist';
+import { z } from 'zod';
+
+export const middlewares = [
+  isAuthorized,
+  shouldExist('users', {
+    criteria: (ctx) => ({
+      email: ctx.validatedData.email,
+      organizationId: ctx.state.user.organizationId
+    })
+  })
+];
+
+export const handler = async (ctx) => {
+  ctx.body = ctx.state.user;
+};
+
+export const requestSchema = z.object({
+  email: z.string().email(),
+});
+
+export const endpoint = {
+  method: "GET",
+  url: "/by-email",
+};
+```
+
+## Error handling
+
+### 404 Not Found
+
+Returned when the resource doesn't exist:
+
+```json
+{
+  "status": 404,
+  "message": "posts not found"
+}
+```
+
+<Tip>
+  Customize the error message by catching and re-throwing in your handler, or modify `/src/routes/middlewares/routeErrorHandler.js`.
+</Tip>
+
+## Singularization rules
+
+The middleware uses these rules to singularize resource names:
+
+| Plural | Singular | Rule |
+|--------|----------|------|
+| posts | post | Remove 's' |
+| categories | category | 'ies' → 'y' |
+| knives | knife | 'ves' → 'fe' |
+| statuses | status | 'ses' → 's' |
+| caches | cache | 'es' → 'e' |
+
+<Note>
+  If singularization doesn't work for your resource name, use the `ctxName` option to specify the exact name.
+</Note>
+
+## Common patterns
+
+<AccordionGroup>
+  <Accordion title="Load user's own resource">
+    ```javascript
+    shouldExist('posts', {
+      criteria: (ctx) => ({
+        _id: ctx.params.postId,
+        authorId: ctx.state.user._id
+      })
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Load by non-ID field">
+    ```javascript
+    shouldExist('posts', {
+      criteria: (ctx) => ({ slug: ctx.params.slug })
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Load with conditions">
+    ```javascript
+    shouldExist('posts', {
+      criteria: (ctx) => ({
+        _id: ctx.params.postId,
+        published: true,
+        deletedAt: null
+      })
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Load from query string">
+    ```javascript
+    shouldExist('posts', {
+      criteria: (ctx) => ({ _id: ctx.query.postId })
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Load parent and child">
+    ```javascript
+    export const middlewares = [
+      shouldExist('organizations'),
+      shouldExist('teams', {
+        criteria: (ctx) => ({
+          _id: ctx.params.teamId,
+          organizationId: ctx.state.organization._id
+        })
+      })
+    ];
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Related middlewares
+
+<CardGroup cols={2}>
+  <Card title="isAuthorized" icon="lock" href="/api/middlewares/is-authorized">
+    Combine with auth to ensure user access
+  </Card>
+
+</CardGroup>
+
+## See also
+
+- [Middleware system](/api/middlewares/overview)
+- [Database services](/api/database/services)
+- [Resources concept](/concepts/resources)

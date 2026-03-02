@@ -1,0 +1,226 @@
+---
+title: hive run
+description: Start the Hive development server and watch for changes
+---
+
+The `hive run` command starts your Hive application in development mode. It sets up the framework runtime, loads your source code, and launches the server.
+
+## Usage
+
+```bash
+hive run [dirPath]
+```
+
+## Parameters
+
+<ParamField path="dirPath" type="string" default=".">
+  Path to your source directory (typically `./src`). If not provided, defaults to the current directory.
+</ParamField>
+
+## How it works
+
+When you run `hive run`, the following happens:
+
+1. **Sets environment variable** - `HIVE_SRC` is set to the absolute path of your source directory
+2. **Creates `.hive` directory** - The framework copies its core files to `.hive/` in your project
+3. **Merges user code** - Your resources, endpoints, and handlers are loaded from `HIVE_SRC`
+4. **Starts the server** - Launches the Koa server with all routes and middleware registered
+
+<Note>
+The `.hive` directory is automatically generated and should be added to `.gitignore`. Never edit files in this directory directly.
+</Note>
+
+## Examples
+
+### Standard usage
+
+```bash
+hive run ./src
+```
+
+Output:
+```
+Server is running on port 3001
+MongoDB connected to mongodb://localhost:27017/my-app
+```
+
+### Using npm scripts
+
+Most Hive projects use npm scripts for convenience:
+
+```json
+{
+  "scripts": {
+    "dev": "hive run ./src",
+    "start": "hive run ./src"
+  }
+}
+```
+
+Then run:
+```bash
+npm run dev
+```
+
+### Current directory
+
+If you're already in your `src` directory:
+
+```bash
+cd src
+hive run .
+```
+
+<Warning>
+Make sure your `.env` file exists and contains the required variables (`MONGO_URI`, `PORT`, `NODE_ENV`) before running the server.
+</Warning>
+
+## Environment variables
+
+The `hive run` command reads from your `.env` file:
+
+```bash
+# Database connection
+MONGO_URI=mongodb://localhost:27017/my-app
+
+# Server port
+PORT=3001
+
+# Environment mode
+NODE_ENV=development
+
+# Optional: JWT secret for authentication
+APP_SECRET=your-secret-key
+
+# Optional: Hive Cloud token
+HIVE_TOKEN=your-token
+```
+
+## Development workflow
+
+<CodeGroup>
+```bash Basic development
+hive run ./src
+# Server starts on http://localhost:3001
+```
+
+```bash With custom port
+PORT=4000 hive run ./src
+# Server starts on http://localhost:4000
+```
+
+```bash Production mode
+NODE_ENV=production hive run ./src
+```
+</CodeGroup>
+
+## What gets loaded
+
+Hive automatically discovers and loads:
+
+- **Resources** from `src/resources/**/`
+  - Schema files (`schema.js`)
+  - Endpoint files (`*.endpoint.js`)
+  - Handler files (`*.handler.js`)
+
+- **Middlewares** from `src/middlewares/`
+  - Custom middleware functions
+
+- **Services** from `src/services/`
+  - Business logic modules
+
+- **Scheduler** from `src/scheduler/handlers/`
+  - Cron job definitions
+
+<Tip>
+Hive uses convention over configuration. Place your files in the standard locations and they'll be automatically loaded.
+</Tip>
+
+## Runtime behavior
+
+### Framework merging
+
+The framework files in `.hive/starter/src/` are merged with your code:
+
+```
+.hive/starter/src/         Your src/
+├── resources/             ├── resources/
+│   ├── users/        +    │   ├── tasks/
+│   ├── tokens/            │   └── projects/
+│   └── health/            ├── middlewares/
+├── middlewares/      +    └── services/
+└── helpers/
+```
+
+Result: Built-in resources (users, auth) + your custom resources (tasks, projects)
+
+### Auto-sync system
+
+If you have embedded document references, Hive automatically keeps them in sync:
+
+```javascript
+// src/resources/tasks/schema.js
+const taskSchema = {
+  title: z.string(),
+  assignee: z.object({
+    _id: z.string(),
+    name: z.string(),
+    email: z.string(),
+  }),
+};
+```
+
+When a user's email changes, all tasks with that user as `assignee` are automatically updated.
+
+<Note>
+Auto-sync is powered by the `autoMap` system in `.hive/starter/src/autoMap/`. No configuration needed.
+</Note>
+
+## Troubleshooting
+
+### Server won't start
+
+**MongoDB not running**
+```bash
+# Start MongoDB first
+mongod --dbpath ~/data/db
+
+# Then run Hive
+hive run ./src
+```
+
+**Port already in use**
+```bash
+# Use a different port
+PORT=3002 hive run ./src
+```
+
+**Missing dependencies**
+```bash
+# Install Hive and dependencies
+npm install @paralect/hive
+npm install
+```
+
+### Changes not reflecting
+
+<Warning>
+Hive doesn't have hot reload by default. Restart the server to see code changes:
+
+```bash
+# Stop the server (Ctrl+C)
+# Start again
+hive run ./src
+```
+
+For auto-restart, use `nodemon`:
+```bash
+npm install -D nodemon
+nodemon --exec "hive run ./src"
+```
+</Warning>
+
+## See also
+
+- [hive prepare](/api/cli/prepare) - Prepare the server without starting it
+- [hive deploy](/api/cli/deploy) - Build for production deployment

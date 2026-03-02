@@ -1,0 +1,381 @@
+---
+title: Installation
+description: Install Hive and configure your development environment with all required dependencies and tools.
+---
+
+## Prerequisites
+
+Before installing Hive, ensure you have the following installed on your system:
+
+<CardGroup cols={2}>
+  <Card title="Node.js 16+" icon="node-js">
+    Download from [nodejs.org](https://nodejs.org/)
+  </Card>
+  <Card title="MongoDB" icon="database">
+    Install locally or use [MongoDB Atlas](https://www.mongodb.com/cloud/atlas)
+  </Card>
+  <Card title="npm or yarn" icon="box">
+    Comes with Node.js installation
+  </Card>
+  <Card title="Git" icon="git-alt">
+    Download from [git-scm.com](https://git-scm.com/)
+  </Card>
+</CardGroup>
+
+## Install the CLI
+
+<Steps>
+  <Step title="Install globally">
+    Install the Hive CLI globally using npm:
+
+    ```bash
+    npm install -g @paralect/hive
+    ```
+
+    Or using yarn:
+
+    ```bash
+    yarn global add @paralect/hive
+    ```
+
+    <Note>
+      Global installation allows you to use the `hive` command from anywhere in your terminal.
+    </Note>
+  </Step>
+
+  <Step title="Verify installation">
+    Confirm the installation by checking the version:
+
+    ```bash
+    hive --version
+    ```
+
+    You should see the current version number:
+
+    ```bash
+    0.1.48
+    ```
+  </Step>
+
+  <Step title="Check available commands">
+    View all available Hive commands:
+
+    ```bash
+    hive --help
+    ```
+
+    You should see:
+
+    ```
+    Usage: hive [options] [command]
+
+    Options:
+      -h, --help           display help for command
+
+    Commands:
+      init [projectName]   Initialize a new Hive project
+      run [dirPath]        Run Hive server
+      prepare [dirPath]    Prepare Hive server
+      deploy               Deploy to Hive Cloud
+      install <plugin>     Install plugin
+      login                Login to Hive Cloud
+    ```
+  </Step>
+</Steps>
+
+## Setup MongoDB
+
+<Tip>
+  You can use MongoDB locally or a cloud-hosted solution like MongoDB Atlas. Both work seamlessly with Hive.
+</Tip>
+
+<Tabs>
+  <Tab title="Local MongoDB">
+    ### Install MongoDB locally
+
+    <Steps>
+      <Step title="macOS">
+        Using Homebrew:
+
+        ```bash
+        brew tap mongodb/brew
+        brew install mongodb-community
+        brew services start mongodb-community
+        ```
+      </Step>
+
+      <Step title="Ubuntu/Debian">
+        ```bash
+        sudo apt-get update
+        sudo apt-get install -y mongodb-org
+        sudo systemctl start mongod
+        sudo systemctl enable mongod
+        ```
+      </Step>
+
+      <Step title="Windows">
+        Download the installer from [MongoDB Download Center](https://www.mongodb.com/try/download/community) and follow the installation wizard.
+
+        Start MongoDB:
+
+        ```bash
+        net start MongoDB
+        ```
+      </Step>
+
+      <Step title="Verify MongoDB is running">
+        Check if MongoDB is accessible:
+
+        ```bash
+        mongosh
+        ```
+
+        You should see the MongoDB shell. Exit with `exit`.
+      </Step>
+    </Steps>
+
+    Your local MongoDB connection string will be:
+
+    ```
+    mongodb://localhost:27017/your-database-name
+    ```
+  </Tab>
+
+  <Tab title="MongoDB Atlas (Cloud)">
+    ### Using MongoDB Atlas
+
+    <Steps>
+      <Step title="Create an account">
+        Sign up for a free account at [MongoDB Atlas](https://www.mongodb.com/cloud/atlas/register).
+      </Step>
+
+      <Step title="Create a cluster">
+        1. Click "Build a Database"
+        2. Choose the **FREE** tier (M0 Sandbox)
+        3. Select your preferred cloud provider and region
+        4. Click "Create Cluster"
+      </Step>
+
+      <Step title="Configure network access">
+        1. Go to "Network Access" in the left sidebar
+        2. Click "Add IP Address"
+        3. For development, click "Allow Access from Anywhere" (0.0.0.0/0)
+        
+        <Warning>
+          For production, restrict access to specific IP addresses only.
+        </Warning>
+      </Step>
+
+      <Step title="Create database user">
+        1. Go to "Database Access" in the left sidebar
+        2. Click "Add New Database User"
+        3. Choose "Password" authentication
+        4. Enter a username and strong password
+        5. Set permissions to "Read and write to any database"
+        6. Click "Add User"
+      </Step>
+
+      <Step title="Get connection string">
+        1. Go to "Database" in the left sidebar
+        2. Click "Connect" on your cluster
+        3. Choose "Connect your application"
+        4. Copy the connection string
+        5. Replace `<password>` with your database user password
+        6. Replace `<database>` with your database name (e.g., `my-app`)
+
+        Your connection string will look like:
+
+        ```
+        mongodb+srv://username:password@cluster0.xxxxx.mongodb.net/my-app?retryWrites=true&w=majority
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Optional dependencies
+
+### Redis (for production)
+
+Redis is required for production deployments with Socket.io scaling and BullMQ job queues.
+
+<Tabs>
+  <Tab title="macOS">
+    ```bash
+    brew install redis
+    brew services start redis
+    ```
+  </Tab>
+
+  <Tab title="Ubuntu/Debian">
+    ```bash
+    sudo apt-get update
+    sudo apt-get install redis-server
+    sudo systemctl start redis
+    sudo systemctl enable redis
+    ```
+  </Tab>
+
+  <Tab title="Windows">
+    Download from [Redis for Windows](https://github.com/microsoftarchive/redis/releases) or use WSL.
+  </Tab>
+
+  <Tab title="Cloud (Redis Labs)">
+    Sign up for a free account at [Redis Labs](https://redis.com/try-free/) and get your connection string.
+  </Tab>
+</Tabs>
+
+### AI editor (recommended)
+
+Hive is designed for AI-native development. We recommend:
+
+- **[Cursor](https://cursor.sh/)** - AI-first code editor (recommended)
+- **VS Code** with GitHub Copilot
+- Any editor with AI assistance
+
+## Environment setup
+
+After creating a Hive project, configure your `.env` file:
+
+```bash .env
+# Required
+MONGO_URI=mongodb://localhost:27017/my-app
+PORT=3001
+NODE_ENV=development
+
+# Optional (for production)
+REDIS_URI=redis://localhost:6379
+APP_ENV=development
+
+# Optional (for email)
+SENDGRID_API_KEY=your-sendgrid-key
+SENDGRID_FROM_EMAIL=noreply@example.com
+
+# Optional (for file uploads)
+AWS_ACCESS_KEY_ID=your-aws-key
+AWS_SECRET_ACCESS_KEY=your-aws-secret
+AWS_S3_BUCKET=your-bucket-name
+AWS_REGION=us-east-1
+```
+
+<Warning>
+  Never commit your `.env` file to version control. It's automatically added to `.gitignore`.
+</Warning>
+
+## Project structure
+
+After running `hive init my-app`, your project will have:
+
+```
+my-app/
+├── src/
+│   ├── resources/        # Your application features
+│   ├── middlewares/      # Custom middleware functions
+│   ├── services/         # External API integrations
+│   └── scheduler/
+│       └── handlers/     # Cron job handlers
+├── .cursor/              # Cursor skills (if using Cursor)
+├── .env                  # Environment variables (don't commit)
+├── .gitignore
+└── package.json
+```
+
+<Note>
+  The `.hive/` directory is auto-generated when you run `hive run ./src`. It contains the framework core and should never be edited manually.
+</Note>
+
+## CLI commands reference
+
+| Command | Description | Example |
+|---------|-------------|----------|
+| `hive init [name]` | Create a new Hive project | `hive init my-app` |
+| `hive run [path]` | Start development server | `hive run ./src` |
+| `hive prepare [path]` | Build for production | `hive prepare ./src` |
+| `hive deploy` | Deploy to Hive Cloud | `hive deploy` |
+| `hive install <plugin>` | Install a plugin | `hive install auth-google` |
+| `hive login` | Login to Hive Cloud | `hive login` |
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Command not found: hive">
+    The CLI wasn't installed globally. Try:
+
+    ```bash
+    npm install -g @paralect/hive
+    ```
+
+    Or check your npm global bin path:
+
+    ```bash
+    npm config get prefix
+    ```
+
+    Make sure this path is in your system's PATH environment variable.
+  </Accordion>
+
+  <Accordion title="MongoDB connection error">
+    Ensure MongoDB is running:
+
+    ```bash
+    # macOS
+    brew services start mongodb-community
+
+    # Linux
+    sudo systemctl start mongod
+
+    # Check status
+    mongosh
+    ```
+
+    Verify your `MONGO_URI` in `.env` is correct.
+  </Accordion>
+
+  <Accordion title="Port already in use">
+    Change the port in your `.env` file:
+
+    ```bash
+    PORT=3002
+    ```
+
+    Or kill the process using the port:
+
+    ```bash
+    # Find process on port 3001
+    lsof -i :3001
+
+    # Kill the process
+    kill -9 <PID>
+    ```
+  </Accordion>
+
+  <Accordion title="Module not found errors">
+    The `.hive/` directory might be corrupted or outdated. Delete it and restart:
+
+    ```bash
+    rm -rf .hive
+    hive run ./src
+    ```
+
+    The framework will be re-copied automatically.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+Now that you have Hive installed, you're ready to build your first API:
+
+<CardGroup cols={2}>
+  <Card title="Quickstart guide" icon="rocket" href="/quickstart">
+    Create your first endpoint in 5 minutes
+  </Card>
+  <Card title="Core concepts" icon="lightbulb" href="/concepts">
+    Learn about resources, schemas, and endpoints
+  </Card>
+  <Card title="API reference" icon="code" href="/api/cli/init">
+    Explore the complete API documentation
+  </Card>
+  <Card title="Deployment guide" icon="cloud" href="/deployment/overview">
+    Learn how to deploy your Hive app
+  </Card>
+</CardGroup>

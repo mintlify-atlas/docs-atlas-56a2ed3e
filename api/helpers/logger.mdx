@@ -1,0 +1,307 @@
+---
+title: Logger
+description: Winston-based logging utilities with environment-aware formatting and custom transports
+---
+
+Hive uses Winston for structured logging with automatic environment-based formatting and support for custom transports.
+
+## Overview
+
+The logger provides:
+- Colored console output in development
+- JSON-formatted logs in production
+- Automatic timestamps
+- Custom log levels (debug, info, warn, error)
+- Extensible with custom transports
+
+<Note>
+The logger automatically adjusts its format and level based on the `config.isDev` setting.
+</Note>
+
+## Basic usage
+
+```javascript
+import logger from 'logger';
+
+logger.info('Server started successfully');
+logger.debug('Processing request', { userId: '123' });
+logger.warn('Rate limit approaching');
+logger.error('Database connection failed', { error });
+```
+
+## Log levels
+
+The logger supports Winston's standard log levels:
+
+<ParamField path="debug" type="function">
+  Detailed debugging information. Only shown in development mode.
+</ParamField>
+
+<ParamField path="info" type="function">
+  General informational messages about application flow.
+</ParamField>
+
+<ParamField path="warn" type="function">
+  Warning messages for potentially harmful situations.
+</ParamField>
+
+<ParamField path="error" type="function">
+  Error messages for failure conditions that need attention.
+</ParamField>
+
+### Default log levels by environment
+
+- **Development**: `debug` and above (shows all logs)
+- **Production**: `info` and above (excludes debug logs)
+
+## Output formats
+
+### Development mode
+
+Colorized, human-readable format:
+
+```bash
+2026-03-02 10:30:15 - info: "Server started on port 3001"
+2026-03-02 10:30:16 - debug: {"userId":"123","action":"login"}
+2026-03-02 10:30:20 - error: "Database connection failed"
+```
+
+### Production mode
+
+JSON-structured format for log aggregation:
+
+```json
+{"timestamp":"2026-03-02 10:30:15","level":"info","message":"Server started on port 3001"}
+{"timestamp":"2026-03-02 10:30:20","level":"error","message":"Database connection failed"}
+```
+
+<Tip>
+JSON logs in production make it easy to integrate with log aggregation services like Datadog, Splunk, or CloudWatch.
+</Tip>
+
+## Logging structured data
+
+You can log objects and they will be automatically serialized:
+
+```javascript
+// Log with context
+logger.info('User action', {
+  userId: user._id,
+  action: 'purchase',
+  amount: 99.99,
+});
+
+// Log errors with stack traces
+try {
+  await riskyOperation();
+} catch (error) {
+  logger.error('Operation failed', {
+    error: error.message,
+    stack: error.stack,
+    userId: ctx.state.user._id,
+  });
+}
+```
+
+## Custom transports
+
+Add custom Winston transports by creating `src/app-config/logger.js`:
+
+<CodeGroup>
+```javascript src/app-config/logger.js
+import winston from 'winston';
+import { Logtail } from '@logtail/node';
+import { LogtailTransport } from '@logtail/winston';
+
+const logtail = new Logtail(process.env.LOGTAIL_TOKEN);
+
+export const transports = [
+  new LogtailTransport(logtail),
+  // Add more custom transports here
+];
+```
+
+```javascript File transport example
+import winston from 'winston';
+
+export const transports = [
+  new winston.transports.File({
+    filename: 'logs/error.log',
+    level: 'error',
+  }),
+  new winston.transports.File({
+    filename: 'logs/combined.log',
+  }),
+];
+```
+</CodeGroup>
+
+<Warning>
+Custom transports from `src/app-config/logger.js` are added alongside the default console transport, not as replacements.
+</Warning>
+
+## Common patterns
+
+### Request logging middleware
+
+```javascript
+import logger from 'logger';
+
+export default async (ctx, next) => {
+  const start = Date.now();
+  
+  logger.info('Request started', {
+    method: ctx.method,
+    path: ctx.path,
+    userId: ctx.state.user?._id,
+  });
+  
+  await next();
+  
+  const duration = Date.now() - start;
+  
+  logger.info('Request completed', {
+    method: ctx.method,
+    path: ctx.path,
+    status: ctx.status,
+    duration,
+  });
+};
+```
+
+### Error logging
+
+```javascript
+import logger from 'logger';
+
+export default async (ctx, next) => {
+  try {
+    await next();
+  } catch (error) {
+    logger.error('Unhandled error', {
+      error: error.message,
+      stack: error.stack,
+      method: ctx.method,
+      path: ctx.path,
+      userId: ctx.state.user?._id,
+    });
+    
+    throw error;
+  }
+};
+```
+
+### Database operation logging
+
+```javascript
+import logger from 'logger';
+import db from 'db';
+
+db.services.users.on('created', ({ doc }) => {
+  logger.info('User created', {
+    userId: doc._id,
+    email: doc.email,
+  });
+});
+
+db.services.users.on('updated', ({ doc, prevDoc }) => {
+  logger.debug('User updated', {
+    userId: doc._id,
+    changes: getChangedFields(doc, prevDoc),
+  });
+});
+```
+
+### Background job logging
+
+```javascript
+import logger from 'logger';
+
+export default async ({ data }) => {
+  logger.info('Job started', {
+    jobType: 'email-send',
+    recipientId: data.userId,
+  });
+  
+  try {
+    await sendEmail(data);
+    
+    logger.info('Job completed', {
+      jobType: 'email-send',
+      recipientId: data.userId,
+    });
+  } catch (error) {
+    logger.error('Job failed', {
+      jobType: 'email-send',
+      recipientId: data.userId,
+      error: error.message,
+    });
+    
+    throw error;
+  }
+};
+```
+
+## Best practices
+
+### Use appropriate log levels
+
+```javascript
+// Debug: Detailed troubleshooting info (dev only)
+logger.debug('Cache hit', { key, value });
+
+// Info: Normal application flow
+logger.info('User logged in', { userId });
+
+// Warn: Unusual but handled situations
+logger.warn('API rate limit at 80%', { endpoint });
+
+// Error: Failures that need attention
+logger.error('Payment processing failed', { orderId, error });
+```
+
+### Include relevant context
+
+```javascript
+// Good: Includes context for debugging
+logger.error('Order creation failed', {
+  userId: user._id,
+  productId: product._id,
+  error: error.message,
+  stack: error.stack,
+});
+
+// Bad: Missing context
+logger.error('Order creation failed');
+```
+
+### Avoid logging sensitive data
+
+```javascript
+// Good: Redact sensitive fields
+logger.info('User updated', {
+  userId: user._id,
+  email: user.email,
+});
+
+// Bad: Logs password
+logger.info('User updated', user); // Contains user.passwordHash
+```
+
+### Use structured logging
+
+```javascript
+// Good: Structured data
+logger.info('Payment processed', {
+  orderId: order._id,
+  amount: order.total,
+  currency: 'USD',
+});
+
+// Bad: String concatenation
+logger.info(`Payment processed for order ${order._id} amount ${order.total}`);
+```
+
+<Tip>
+Structured logs make it much easier to search, filter, and analyze your logs in production.
+</Tip>

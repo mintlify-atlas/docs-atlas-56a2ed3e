@@ -1,0 +1,663 @@
+---
+title: Auto-sync
+description: Automatic syncing of embedded documents keeps data fresh
+---
+
+Auto-sync is Hive's killer feature. When you embed documents (like storing user info in a task), those embedded fields stay fresh automatically when the source document changes.
+
+## The problem
+
+Imagine you have tasks that store user info:
+
+```javascript
+const task = {
+  _id: '123',
+  title: 'Review PR',
+  assignee: {
+    _id: 'user-456',
+    fullName: 'John Doe',
+    email: 'john@example.com',
+  },
+};
+```
+
+What happens when John changes his name to "John Smith"?
+
+**Without auto-sync:** Tasks still show "John Doe". You manually update hundreds of tasks.
+
+**With auto-sync:** All tasks update automatically. No code required.
+
+<Note>
+  Auto-sync keeps embedded documents in sync with their source. It's like database joins, but denormalized for performance.
+</Note>
+
+## How it works
+
+<Steps>
+  <Step title="Define mappings">
+    Tell Hive which fields embed other schemas in `schemaMappings.json`
+  </Step>
+  
+  <Step title="Framework registers handlers">
+    Auto-sync creates event handlers for source schema updates
+  </Step>
+  
+  <Step title="User updates propagate">
+    When a user changes, handlers update all tasks with that user
+  </Step>
+  
+  <Step title="Embedded data stays fresh">
+    No manual sync code. It just works.
+  </Step>
+</Steps>
+
+## Configuration
+
+Create `src/autoMap/schemaMappings.json`:
+
+```json
+{
+  "tasks": {
+    "assignee": { "schema": "users" },
+    "createdBy": { "schema": "users" }
+  },
+  "projects": {
+    "owner": { "schema": "users" },
+    "members": { "schema": "users" }
+  }
+}
+```
+
+This tells Hive:
+- Tasks have `assignee` and `createdBy` fields that embed users
+- Projects have `owner` and `members` fields that embed users
+
+<Tip>
+  The `schema` value must match a schema name in your resources.
+</Tip>
+
+## Schema requirements
+
+For auto-sync to work, embedded fields must include `_id`:
+
+```javascript
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const tasks = dbSchema.extend({
+  title: z.string(),
+  
+  // Single embedded user
+  assignee: z.object({
+    _id: z.string(),        // Required for auto-sync
+    fullName: z.string(),   // Will auto-sync
+    email: z.string(),      // Will auto-sync
+    avatarUrl: z.string().url().optional(),  // Will auto-sync
+  }).nullable().optional(),
+  
+  // Array of embedded users
+  watchers: z.array(z.object({
+    _id: z.string(),        // Required
+    fullName: z.string(),
+  })).default([]),
+});
+
+export default tasks;
+```
+
+<Warning>
+  Embedded objects must have `_id`. Without it, auto-sync can't track which source document to sync from.
+</Warning>
+
+## How auto-sync updates data
+
+The framework creates handlers that listen for changes (from `starter/src/autoMap/addHandlers.js:95`):
+
+```javascript
+const addOnDependentEntitiesUpdatedHandlers = ({ schemaName }) => {
+  const dependentFieldNames = Object.keys(schemaMappings[schemaName]);
+  
+  dependentFieldNames.forEach((dependentFieldName) => {
+    const dependentFieldSchemaName =
+      schemaMappings[schemaName][dependentFieldName].schema;
+    const schema = db.schemas[schemaName];
+    const dependentFields = getDependentFields(schema, dependentFieldName);
+    
+    db.services[dependentFieldSchemaName].on(
+      "updated",
+      ifUpdated(dependentFields, async ({ doc }) => {
+        const toUpdate = _.pick(doc, ["_id", ...dependentFields]);
+        
+        if (isZodArray(schema.shape[dependentFieldName])) {
+          // Update array elements
+          db.services[schemaName].atomic.update(
+            { [`${dependentFieldName}._id`]: doc._id },
+            {
+              $set: {
+                [`${dependentFieldName}.$`]: toUpdate,
+              },
+            },
+            {
+              multi: true,
+            }
+          );
+        } else {
+          // Update single object
+          db.services[schemaName].atomic.update(
+            { [`${dependentFieldName}._id`]: doc._id },
+            {
+              $set: {
+                [`${dependentFieldName}`]: toUpdate,
+              },
+            },
+            {
+              multi: true,
+            }
+          );
+        }
+      })
+    );
+  });
+};
+```
+
+<Accordion title="What happens step-by-step">
+  1. User updates their name: `John Doe` → `John Smith`
+  2. Handler detects `fullName` changed (using `ifUpdated`)
+  3. Picks updated fields: `{ _id, fullName, email, avatarUrl }`
+  4. Finds all tasks where `assignee._id` matches user's `_id`
+  5. Updates those tasks' `assignee` object with fresh data
+  6. All tasks now show "John Smith"
+</Accordion>
+
+## Auto-populating on create
+
+When you create a document with embedded references, auto-sync populates them automatically (from `starter/src/autoMap/addHandlers.js:68`):
+
+```javascript
+const populateOnCreate = ({ schemaName }) => {
+  db.services[schemaName]._options.onBeforeCreated = async ({ docs }) => {
+    const res = await Promise.all(
+      docs.map(async (doc) => {
+        const toUpdate = await getToUpdate({ schemaName, doc });
+        return {
+          ...doc,
+          ...toUpdate,
+        };
+      })
+    );
+    return res;
+  };
+};
+```
+
+This means you can create tasks with just `_id`:
+
+```javascript
+import db from 'db';
+
+const tasksService = db.services.tasks;
+
+// You only provide _id
+const task = await tasksService.create({
+  title: 'Review PR',
+  assignee: {
+    _id: 'user-456',  // Just the ID
+  },
+});
+
+// Auto-sync populates the rest
+console.log(task.assignee);
+// {
+//   _id: 'user-456',
+//   fullName: 'John Smith',
+//   email: 'john@example.com',
+//   avatarUrl: 'https://...',
+// }
+```
+
+<Tip>
+  This saves you from writing manual populate logic. Just pass `_id` and Hive fills in the rest.
+</Tip>
+
+## Field detection
+
+Auto-sync only syncs fields that exist in your schema (from `starter/src/autoMap/getDependentFields.js`):
+
+```javascript
+import _ from 'lodash';
+
+export default (schema, fieldName) => {
+  const fieldSchema = schema.shape[fieldName];
+  
+  if (!fieldSchema) return [];
+  
+  // Extract field names from Zod schema
+  const fields = Object.keys(fieldSchema.shape || {});
+  
+  return fields.filter(f => f !== '_id');
+};
+```
+
+If your task schema has:
+
+```javascript
+assignee: z.object({
+  _id: z.string(),
+  fullName: z.string(),
+  email: z.string(),
+})
+```
+
+Auto-sync tracks: `['fullName', 'email']` (excludes `_id`).
+
+If user schema has more fields (`bio`, `avatarUrl`), they're **not** synced because they're not in the task schema.
+
+<Note>
+  This gives you control over which fields propagate. Add fields to embedded schema to sync them.
+</Note>
+
+## Schema change migration
+
+When you add or remove fields from embedded schemas, auto-sync migrates existing data (from `starter/src/autoMap/mapSchema.js:37`):
+
+```javascript
+const schemaNames = Object.keys(schemaMappings);
+await Promise.all(
+  schemaNames.map(async (schemaName) => {
+    const schema = db.schemas[schemaName];
+
+    const fieldNames = Object.keys(schemaMappings[schemaName]);
+    await Promise.all(
+      fieldNames.map(async (fieldName) => {
+        const dependentFields = getDependentFields(schema, fieldName);
+        const prevSchema = (prevSchemaMappings[schemaName] &&
+          prevSchemaMappings[schemaName][fieldName]) || { fields: [] };
+        const { fields: prevDependentFields } = prevSchema;
+        
+        // If fields changed, migrate data
+        if (
+          _.difference(dependentFields, prevDependentFields).length !== 0
+        ) {
+          console.log(`Mapping schema changes: ${schemaName}.${fieldName}`);
+          
+          // Fetch all unique embedded entity IDs
+          const uniqueDependentEntityIds = await db.services[
+            schemaName
+          ].distinct(`${fieldName}._id`);
+          
+          // Fetch fresh data for those entities
+          const { results: uniqueDependentEntities } = await db.services[
+            schemaMappings[schemaName][fieldName].schema
+          ].find(
+            {
+              _id: { $in: uniqueDependentEntityIds },
+            },
+            { fields: ["_id", ...dependentFields] }
+          );
+          
+          // Update all documents with fresh data
+          await Promise.all(
+            uniqueDependentEntities.map(async (entity) => {
+              if (isZodArray(schema.shape[fieldName])) {
+                await db.services[schemaName].atomic.update(
+                  { [`${fieldName}._id`]: entity._id },
+                  {
+                    $set: { [`${fieldName}.$`]: entity },
+                  },
+                  {
+                    multi: true,
+                  }
+                );
+              } else {
+                await db.services[schemaName].atomic.update(
+                  { [`${fieldName}._id`]: entity._id },
+                  {
+                    $set: { [`${fieldName}`]: entity },
+                  },
+                  {
+                    multi: true,
+                  }
+                );
+              }
+            })
+          );
+        }
+      })
+    );
+  })
+);
+```
+
+<Steps>
+  <Step title="Detect schema changes">
+    Compare current fields with previous fields stored in `schemaMappings` collection
+  </Step>
+  
+  <Step title="Find affected documents">
+    Get all unique `_id` values for embedded entities
+  </Step>
+  
+  <Step title="Fetch fresh data">
+    Query source schema for updated field list
+  </Step>
+  
+  <Step title="Update all documents">
+    Write fresh data to all documents with that embedded entity
+  </Step>
+</Steps>
+
+## Arrays of embedded documents
+
+Auto-sync works with arrays too:
+
+```javascript
+// schemaMappings.json
+{
+  "projects": {
+    "members": { "schema": "users" }
+  }
+}
+```
+
+```javascript
+// projects.schema.js
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const projects = dbSchema.extend({
+  name: z.string(),
+  
+  members: z.array(z.object({
+    _id: z.string(),
+    fullName: z.string(),
+    email: z.string(),
+    role: z.enum(['owner', 'admin', 'member']),
+  })).default([]),
+});
+
+export default projects;
+```
+
+When a user updates their name, **all** projects with that user in `members` update automatically:
+
+```javascript
+// Before user update
+{
+  name: 'Project Alpha',
+  members: [
+    { _id: 'user-1', fullName: 'John Doe', email: 'john@example.com', role: 'owner' },
+    { _id: 'user-2', fullName: 'Jane Smith', email: 'jane@example.com', role: 'member' },
+  ]
+}
+
+// User 'user-1' changes name to 'John Smith'
+
+// After auto-sync
+{
+  name: 'Project Alpha',
+  members: [
+    { _id: 'user-1', fullName: 'John Smith', email: 'john@example.com', role: 'owner' },
+    { _id: 'user-2', fullName: 'Jane Smith', email: 'jane@example.com', role: 'member' },
+  ]
+}
+```
+
+<Note>
+  Auto-sync uses MongoDB's `$` positional operator to update array elements by `_id`.
+</Note>
+
+## Example: Complete setup
+
+### 1. Define schemas
+
+```javascript
+// src/resources/users/users.schema.js
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const users = dbSchema.extend({
+  email: z.string().email(),
+  fullName: z.string(),
+  avatarUrl: z.string().url().optional(),
+  bio: z.string().optional(),
+});
+
+export default users;
+```
+
+```javascript
+// src/resources/tasks/tasks.schema.js
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const tasks = dbSchema.extend({
+  title: z.string(),
+  status: z.enum(['pending', 'in_progress', 'done']).default('pending'),
+  
+  assignee: z.object({
+    _id: z.string(),
+    fullName: z.string(),
+    avatarUrl: z.string().url().optional(),
+  }).nullable().optional(),
+  
+  createdBy: z.object({
+    _id: z.string(),
+    fullName: z.string(),
+  }),
+});
+
+export default tasks;
+```
+
+### 2. Configure mappings
+
+```json
+// src/autoMap/schemaMappings.json
+{
+  "tasks": {
+    "assignee": { "schema": "users" },
+    "createdBy": { "schema": "users" }
+  }
+}
+```
+
+### 3. Use in your code
+
+```javascript
+// Create a task with just user IDs
+import db from 'db';
+
+const tasksService = db.services.tasks;
+
+const task = await tasksService.create({
+  title: 'Implement auto-sync docs',
+  assignee: { _id: 'user-123' },      // Auto-populated
+  createdBy: { _id: 'user-456' },     // Auto-populated
+});
+
+console.log(task.assignee);
+// {
+//   _id: 'user-123',
+//   fullName: 'John Smith',
+//   avatarUrl: 'https://...'
+// }
+```
+
+```javascript
+// Update user - all tasks sync automatically
+import db from 'db';
+
+const usersService = db.services.users;
+
+await usersService.updateOne(
+  { _id: 'user-123' },
+  (doc) => ({ ...doc, fullName: 'John A. Smith', avatarUrl: 'https://new-url.com' })
+);
+
+// All tasks with this user in assignee or createdBy
+// now show "John A. Smith" and new avatar
+```
+
+## Limitations
+
+<Warning>
+  Auto-sync has some constraints you should know about:
+</Warning>
+
+<AccordionGroup>
+  <Accordion title="Requires _id in embedded objects">
+    Can't track updates without a unique identifier:
+    
+    ```javascript
+    // Won't work
+    assignee: z.object({
+      fullName: z.string(),  // No _id!
+    })
+    ```
+  </Accordion>
+  
+  <Accordion title="Only syncs fields in schema">
+    If user has 10 fields but task only embeds 2, only those 2 sync:
+    
+    ```javascript
+    // User schema has: email, fullName, bio, avatarUrl, etc.
+    
+    // Task only embeds fullName and avatarUrl
+    assignee: z.object({
+      _id: z.string(),
+      fullName: z.string(),
+      avatarUrl: z.string(),
+    })
+    
+    // Only fullName and avatarUrl auto-sync
+    ```
+  </Accordion>
+  
+  <Accordion title="Performance with large datasets">
+    Updating a user syncs ALL documents that embed that user. For millions of tasks, this can be slow. Consider:
+    
+    - Indexing `assignee._id` fields
+    - Using queue for large updates
+    - Limiting embedded fields to frequently-changed ones
+  </Accordion>
+  
+  <Accordion title="No nested auto-sync">
+    Auto-sync doesn't work recursively. If Task embeds Project which embeds User, updating User doesn't cascade through Project to Task. You'd need separate mappings.
+  </Accordion>
+</AccordionGroup>
+
+## Best practices
+
+<AccordionGroup>
+  <Accordion title="Embed only what you display">
+    Don't embed entire user objects. Only include fields you show in the UI:
+    
+    ```javascript
+    // Good - minimal fields
+    assignee: z.object({
+      _id: z.string(),
+      fullName: z.string(),
+      avatarUrl: z.string(),
+    })
+    
+    // Bad - too many fields
+    assignee: z.object({
+      _id: z.string(),
+      fullName: z.string(),
+      email: z.string(),
+      phone: z.string(),
+      address: z.object({ ... }),
+      preferences: z.object({ ... }),
+      // ... you get the idea
+    })
+    ```
+  </Accordion>
+  
+  <Accordion title="Index embedded _id fields">
+    Auto-sync queries by `assignee._id`. Create indexes:
+    
+    ```javascript
+    // In a migration file
+    await db.collection('tasks').createIndex({ 'assignee._id': 1 });
+    await db.collection('tasks').createIndex({ 'createdBy._id': 1 });
+    ```
+  </Accordion>
+  
+  <Accordion title="Test schema changes">
+    Adding/removing fields triggers migration. Test in development first:
+    
+    ```javascript
+    // Old schema
+    assignee: z.object({
+      _id: z.string(),
+      fullName: z.string(),
+    })
+    
+    // New schema (added avatarUrl)
+    assignee: z.object({
+      _id: z.string(),
+      fullName: z.string(),
+      avatarUrl: z.string().optional(),  // New field
+    })
+    
+    // Migration runs automatically on next startup
+    // Test with sample data first!
+    ```
+  </Accordion>
+  
+  <Accordion title="Document your mappings">
+    Add comments to schemaMappings.json:
+    
+    ```json
+    {
+      "tasks": {
+        "assignee": { "schema": "users" },
+        "createdBy": { "schema": "users" }
+      },
+      "_comments": {
+        "tasks.assignee": "Syncs fullName and avatarUrl from users",
+        "tasks.createdBy": "Syncs fullName only"
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Debugging auto-sync
+
+Check console output on startup:
+
+```
+[auto-sync] Setting up handlers for tasks.assignee (schema: users)
+[auto-sync] Setting up handlers for tasks.createdBy (schema: users)
+```
+
+When schemas change:
+
+```
+[auto-sync] Mapping schema changes: tasks.assignee
+[auto-sync] Updating 1,523 documents with fresh user data
+```
+
+Add logging to see updates:
+
+```javascript
+// Temporarily add to handler
+db.services.users.on('updated', async ({ doc, prevDoc }) => {
+  console.log('[auto-sync] User updated:', doc._id);
+  console.log('Old name:', prevDoc.fullName);
+  console.log('New name:', doc.fullName);
+});
+```
+
+## Auto-sync is magic, use it
+
+Auto-sync eliminates entire categories of bugs:
+
+- ✅ No stale embedded data
+- ✅ No manual sync logic
+- ✅ No populate on every query
+- ✅ No data inconsistencies
+
+Just define mappings and Hive handles the rest. This is denormalization done right.

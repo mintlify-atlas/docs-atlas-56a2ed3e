@@ -1,0 +1,515 @@
+---
+title: Event handlers
+description: React to database changes with event-driven handlers
+---
+
+Event handlers automatically run when documents are created, updated, or deleted. They're perfect for side effects like sending notifications, updating related data, or triggering background jobs.
+
+## How it works
+
+Every database service emits events when documents change:
+
+- `created` - After a document is created
+- `updated` - After a document is updated
+- `removed` - After a document is deleted
+
+## Creating handlers
+
+Handlers live in `src/resources/{name}/handlers/` and run automatically:
+
+```javascript src/resources/tasks/handlers/onCreate.js
+import db from 'db';
+
+const taskService = db.services.tasks;
+
+taskService.on('created', async ({ doc }) => {
+  console.log('Task created:', doc.title);
+});
+```
+
+<Note>
+  Handlers are automatically imported when your app starts. Just create the file and it runs.
+</Note>
+
+## Event types
+
+<AccordionGroup>
+  <Accordion title="created event">
+    Fires after `service.create()`:
+
+    ```javascript
+    taskService.on('created', async ({ doc }) => {
+      // doc is the newly created document
+      await notificationService.create({
+        type: 'task.created',
+        user: doc.assignee,
+        data: { task: doc },
+      });
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="updated event">
+    Fires after `service.updateOne()` or `service.updateMany()`:
+
+    ```javascript
+    taskService.on('updated', async ({ doc, prevDoc }) => {
+      // doc is the updated document
+      // prevDoc is the document before update
+      
+      if (doc.status !== prevDoc.status) {
+        await logService.create({
+          action: 'status_changed',
+          from: prevDoc.status,
+          to: doc.status,
+        });
+      }
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="removed event">
+    Fires after `service.remove()`:
+
+    ```javascript
+    taskService.on('removed', async ({ doc }) => {
+      // doc is the deleted document
+      
+      // Clean up related data
+      await commentService.remove({ 'task._id': doc._id });
+      await attachmentService.remove({ 'task._id': doc._id });
+    });
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Filtering with ifUpdated
+
+Only run handlers when specific fields change:
+
+```javascript
+import db from 'db';
+import ifUpdated from 'helpers/db/ifUpdated';
+
+const taskService = db.services.tasks;
+
+taskService.on('updated', ifUpdated(['status'], async ({ doc, prevDoc }) => {
+  // Only runs when status changed
+  console.log(`Status changed from ${prevDoc.status} to ${doc.status}`);
+}));
+```
+
+Example from Hive's auto-sync:
+
+```javascript src/autoMap/addHandlers.js
+import ifUpdated from 'helpers/db/ifUpdated';
+
+db.services[dependentFieldSchemaName].on(
+  "updated",
+  ifUpdated(dependentFields, async ({ doc }) => {
+    const toUpdate = _.pick(doc, ["_id", ...dependentFields]);
+    if (isZodArray(schema.shape[dependentFieldName])) {
+      db.services[schemaName].atomic.update(
+        { [`${dependentFieldName}._id`]: doc._id },
+        {
+          $set: {
+            [`${dependentFieldName}.$`]: toUpdate,
+          },
+        },
+        { multi: true }
+      );
+    }
+  })
+);
+```
+
+<Tip>
+  Use `ifUpdated` to avoid running expensive operations when unrelated fields change.
+</Tip>
+
+## Common patterns
+
+<AccordionGroup>
+  <Accordion title="Send notifications">
+    ```javascript src/resources/tasks/handlers/notifyAssignee.js
+    import db from 'db';
+    import ifUpdated from 'helpers/db/ifUpdated';
+
+    const taskService = db.services.tasks;
+    const notificationService = db.services.notifications;
+
+    taskService.on('created', async ({ doc }) => {
+      if (doc.assignee) {
+        await notificationService.create({
+          user: doc.assignee,
+          type: 'task_assigned',
+          title: `New task: ${doc.title}`,
+          data: { task: doc },
+        });
+      }
+    });
+
+    taskService.on('updated', ifUpdated(['assignee'], async ({ doc, prevDoc }) => {
+      if (doc.assignee?._id !== prevDoc.assignee?._id) {
+        await notificationService.create({
+          user: doc.assignee,
+          type: 'task_reassigned',
+          title: `Task assigned to you: ${doc.title}`,
+          data: { task: doc },
+        });
+      }
+    }));
+    ```
+  </Accordion>
+
+  <Accordion title="Update parent documents">
+    ```javascript src/resources/comments/handlers/updateTaskCount.js
+    import db from 'db';
+
+    const commentService = db.services.comments;
+    const taskService = db.services.tasks;
+
+    commentService.on('created', async ({ doc }) => {
+      const { count } = await commentService.find({
+        'task._id': doc.task._id,
+      });
+
+      await taskService.updateOne(
+        { _id: doc.task._id },
+        (task) => ({ ...task, commentCount: count })
+      );
+    });
+
+    commentService.on('removed', async ({ doc }) => {
+      const { count } = await commentService.find({
+        'task._id': doc.task._id,
+      });
+
+      await taskService.updateOne(
+        { _id: doc.task._id },
+        (task) => ({ ...task, commentCount: count })
+      );
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Sync embedded documents">
+    ```javascript src/resources/tasks/handlers/syncProject.js
+    import db from 'db';
+    import ifUpdated from 'helpers/db/ifUpdated';
+
+    const projectService = db.services.projects;
+    const taskService = db.services.tasks;
+
+    // When project updates, update all tasks that reference it
+    projectService.on('updated', ifUpdated(
+      ['title', 'status'],
+      async ({ doc }) => {
+        await taskService.updateMany(
+          { 'project._id': doc._id },
+          (task) => ({
+            ...task,
+            project: {
+              _id: doc._id,
+              title: doc.title,
+              status: doc.status,
+            },
+          })
+        );
+      }
+    ));
+    ```
+  </Accordion>
+
+  <Accordion title="Create activity logs">
+    ```javascript src/resources/tasks/handlers/logActivity.js
+    import db from 'db';
+
+    const taskService = db.services.tasks;
+    const activityService = db.services.activities;
+
+    taskService.on('created', async ({ doc }) => {
+      await activityService.create({
+        type: 'task.created',
+        user: doc.user,
+        project: doc.project,
+        data: { task: doc },
+      });
+    });
+
+    taskService.on('updated', async ({ doc, prevDoc }) => {
+      const changes = {};
+      if (doc.status !== prevDoc.status) changes.status = { from: prevDoc.status, to: doc.status };
+      if (doc.title !== prevDoc.title) changes.title = { from: prevDoc.title, to: doc.title };
+
+      if (Object.keys(changes).length > 0) {
+        await activityService.create({
+          type: 'task.updated',
+          user: doc.user,
+          project: doc.project,
+          data: { task: doc, changes },
+        });
+      }
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Cleanup related data">
+    ```javascript src/resources/projects/handlers/cleanupOnDelete.js
+    import db from 'db';
+
+    const projectService = db.services.projects;
+    const taskService = db.services.tasks;
+    const commentService = db.services.comments;
+    const activityService = db.services.activities;
+
+    projectService.on('removed', async ({ doc }) => {
+      // Delete all tasks in the project
+      await taskService.remove({ 'project._id': doc._id });
+      
+      // Delete all comments
+      await commentService.remove({ 'project._id': doc._id });
+      
+      // Delete activity logs
+      await activityService.remove({ 'project._id': doc._id });
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Trigger background jobs">
+    ```javascript src/resources/invoices/handlers/sendInvoice.js
+    import db from 'db';
+    import ifUpdated from 'helpers/db/ifUpdated';
+    import bullMq from 'bullMqWrapper';
+
+    const invoiceService = db.services.invoices;
+    const emailQueue = bullMq.Queue('emails');
+
+    invoiceService.on('updated', ifUpdated(['status'], async ({ doc }) => {
+      if (doc.status === 'finalized') {
+        await emailQueue.add('send-invoice', {
+          invoiceId: doc._id,
+          userEmail: doc.user.email,
+        });
+      }
+    }));
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Handler file structure
+
+Handlers can be organized however you like:
+
+```
+src/resources/tasks/handlers/
+├── onCreate.js          # Runs on task creation
+├── onStatusChange.js   # Runs when status changes
+├── cleanup.js          # Cleanup on deletion
+└── notifications.js    # All notification logic
+```
+
+Each file can register multiple handlers:
+
+```javascript src/resources/tasks/handlers/notifications.js
+import db from 'db';
+import ifUpdated from 'helpers/db/ifUpdated';
+
+const taskService = db.services.tasks;
+const notificationService = db.services.notifications;
+
+// On create
+taskService.on('created', async ({ doc }) => {
+  await notificationService.create({
+    user: doc.assignee,
+    type: 'task_assigned',
+    data: { task: doc },
+  });
+});
+
+// On status change
+taskService.on('updated', ifUpdated(['status'], async ({ doc }) => {
+  if (doc.status === 'completed') {
+    await notificationService.create({
+      user: doc.user,
+      type: 'task_completed',
+      data: { task: doc },
+    });
+  }
+}));
+
+// On reassignment
+taskService.on('updated', ifUpdated(['assignee'], async ({ doc, prevDoc }) => {
+  if (prevDoc.assignee) {
+    await notificationService.create({
+      user: prevDoc.assignee,
+      type: 'task_unassigned',
+      data: { task: doc },
+    });
+  }
+}));
+```
+
+## Event vs atomic operations
+
+<Warning>
+  Atomic operations don't trigger events. This is by design for performance.
+</Warning>
+
+```javascript
+// This WILL trigger handlers
+await taskService.updateOne(
+  { _id: taskId },
+  (doc) => ({ ...doc, status: 'completed' })
+);
+
+// This WON'T trigger handlers
+await taskService.atomic.update(
+  { _id: taskId },
+  { $set: { status: 'completed' } }
+);
+```
+
+Use atomic operations for:
+- Internal system updates (like auto-sync)
+- Bulk operations that shouldn't trigger side effects
+- Performance-critical updates
+
+## Testing handlers
+
+Handlers run in your test environment. You can verify they work:
+
+```javascript
+import db from 'db';
+
+const taskService = db.services.tasks;
+const notificationService = db.services.notifications;
+
+test('creates notification when task is assigned', async () => {
+  const task = await taskService.create({
+    title: 'Test task',
+    assignee: { _id: userId, fullName: 'John' },
+  });
+
+  // Give handlers time to run
+  await new Promise(resolve => setTimeout(resolve, 100));
+
+  const notification = await notificationService.findOne({
+    'user._id': userId,
+    type: 'task_assigned',
+  });
+
+  expect(notification).toBeDefined();
+  expect(notification.data.task._id).toBe(task._id);
+});
+```
+
+## Performance considerations
+
+<AccordionGroup>
+  <Accordion title="Keep handlers fast">
+    Handlers run synchronously after database operations. Keep them quick:
+
+    ```javascript
+    // Good - fast operations
+    taskService.on('created', async ({ doc }) => {
+      await notificationService.create({ ... });
+    });
+
+    // Bad - slow operations
+    taskService.on('created', async ({ doc }) => {
+      // Don't do expensive work here
+      await generatePDFReport(doc);
+      await sendEmailToAllUsers(doc);
+    });
+
+    // Better - queue expensive work
+    taskService.on('created', async ({ doc }) => {
+      await jobQueue.add('generate-report', { taskId: doc._id });
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Avoid handler loops">
+    Be careful not to create infinite loops:
+
+    ```javascript
+    // BAD - creates infinite loop!
+    taskService.on('updated', async ({ doc }) => {
+      await taskService.updateOne(
+        { _id: doc._id },
+        (d) => ({ ...d, updatedCount: (d.updatedCount || 0) + 1 })
+      );
+    });
+
+    // GOOD - use atomic update (no events)
+    taskService.on('updated', async ({ doc }) => {
+      await taskService.atomic.update(
+        { _id: doc._id },
+        { $inc: { updatedCount: 1 } }
+      );
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Batch updates when possible">
+    ```javascript
+    // Less efficient - multiple updates
+    taskService.on('updated', async ({ doc }) => {
+      const tasks = await taskService.find({ 'project._id': doc.project._id });
+      for (const task of tasks.results) {
+        await taskService.updateOne(
+          { _id: task._id },
+          (t) => ({ ...t, projectStatus: doc.project.status })
+        );
+      }
+    });
+
+    // More efficient - single atomic update
+    taskService.on('updated', async ({ doc }) => {
+      await taskService.atomic.update(
+        { 'project._id': doc.project._id },
+        { $set: { projectStatus: doc.project.status } },
+        { multi: true }
+      );
+    });
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Real-time updates
+
+Combine handlers with Socket.io to push real-time updates:
+
+```javascript src/resources/tasks/handlers/realtime.js
+import db from 'db';
+import ioEmitter from 'ioEmitter';
+
+const taskService = db.services.tasks;
+
+taskService.on('created', async ({ doc }) => {
+  // Emit to project room
+  ioEmitter.to(`project-${doc.project._id}`).emit('task:created', doc);
+});
+
+taskService.on('updated', async ({ doc }) => {
+  ioEmitter.to(`project-${doc.project._id}`).emit('task:updated', doc);
+});
+
+taskService.on('removed', async ({ doc }) => {
+  ioEmitter.to(`project-${doc.project._id}`).emit('task:removed', { _id: doc._id });
+});
+```
+
+See [Real-time with Socket.io](/guides/real-time) for more details.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Real-time" icon="broadcast-tower" href="/guides/real-time">
+    Push updates to clients with Socket.io
+  </Card>
+  <Card title="Background jobs" icon="clock" href="/guides/background-jobs">
+    Queue expensive work with BullMQ
+  </Card>
+</CardGroup>

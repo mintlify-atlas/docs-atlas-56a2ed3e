@@ -1,0 +1,570 @@
+---
+title: Transaction support
+description: MongoDB multi-document ACID transactions for data consistency and atomicity in Hive
+---
+
+## Overview
+
+Hive supports MongoDB multi-document ACID transactions through the `performTransaction` method. Transactions ensure that multiple operations either all succeed or all fail together, maintaining data consistency.
+
+```javascript starter/src/lib/node-mongo/src/mongo-service.js
+async performTransaction(transactionFn, options = {}) {
+  const session = this._collection.manager._client.startSession(options);
+  
+  try {
+    await session.withTransaction(transactionFn);
+  } catch (error) {
+    session.endSession();
+    throw error;
+  }
+}
+```
+
+<Note>
+Transactions require MongoDB 4.0+ with a replica set or sharded cluster. They are not supported on standalone MongoDB instances.
+</Note>
+
+## Basic transaction usage
+
+Execute multiple operations within a transaction context.
+
+```javascript
+await db.services.users.performTransaction(async (session) => {
+  // Create a user
+  const user = await db.services.users.create(
+    { email: "user@example.com", fullName: "John Doe" },
+    { session }
+  );
+  
+  // Create an associated token
+  await db.services.tokens.create(
+    {
+      user: { _id: user._id },
+      token: generateToken()
+    },
+    { session }
+  );
+  
+  // Both operations commit together
+});
+```
+
+<ParamField path="transactionFn" type="function" required>
+  Async function that receives a MongoDB session and performs operations
+</ParamField>
+
+<ParamField path="options" type="object">
+  MongoDB session options for transaction configuration
+</ParamField>
+
+<Warning>
+All operations within the transaction must pass the `session` option to be included in the transaction context.
+</Warning>
+
+## Transaction rollback
+
+If any operation fails, all changes are automatically rolled back.
+
+```javascript
+try {
+  await db.services.users.performTransaction(async (session) => {
+    const user = await db.services.users.create(
+      { email: "user@example.com", fullName: "John Doe" },
+      { session }
+    );
+    
+    // This will fail if validation fails
+    await db.services.tokens.create(
+      { user: { _id: user._id }, token: null }, // Invalid: token required
+      { session }
+    );
+  });
+} catch (error) {
+  console.log('Transaction rolled back:', error);
+  // User creation is rolled back
+}
+```
+
+<ResponseField name="error" type="MongoServiceError">
+  Error that caused the transaction to fail and roll back
+</ResponseField>
+
+## Multi-service transactions
+
+Perform operations across multiple services within a single transaction.
+
+```javascript
+await db.services.users.performTransaction(async (session) => {
+  // Update user
+  const user = await db.services.users.updateOne(
+    { _id: userId },
+    (user) => {
+      user.status = "premium";
+      return user;
+    },
+    { session }
+  );
+  
+  // Create audit log
+  await db.services.auditLogs.create(
+    {
+      userId: user._id,
+      action: "upgrade_to_premium",
+      timestamp: new Date().toISOString()
+    },
+    { session }
+  );
+  
+  // Update subscription
+  await db.services.subscriptions.updateOne(
+    { userId: user._id },
+    (sub) => {
+      sub.plan = "premium";
+      sub.renewsAt = calculateRenewalDate();
+      return sub;
+    },
+    { session }
+  );
+});
+```
+
+<Tip>
+Transactions can span multiple collections and services, ensuring consistency across your entire data model.
+</Tip>
+
+## Supported operations
+
+All service methods support transactions via the `session` option.
+
+### Create
+
+```javascript
+await db.services.users.performTransaction(async (session) => {
+  const user = await db.services.users.create(
+    { email: "user@example.com" },
+    { session }
+  );
+});
+```
+
+### Update one
+
+```javascript
+await db.services.users.performTransaction(async (session) => {
+  const updated = await db.services.users.updateOne(
+    { _id: userId },
+    (user) => {
+      user.status = "active";
+      return user;
+    },
+    { session }
+  );
+});
+```
+
+### Update many
+
+```javascript
+await db.services.users.performTransaction(async (session) => {
+  const updated = await db.services.users.updateMany(
+    { status: "pending" },
+    (user) => {
+      user.status = "active";
+      return user;
+    },
+    { session }
+  );
+});
+```
+
+### Remove
+
+```javascript
+await db.services.users.performTransaction(async (session) => {
+  await db.services.users.remove(
+    { _id: userId },
+    { session }
+  );
+});
+```
+
+### Find with session
+
+```javascript
+await db.services.users.performTransaction(async (session) => {
+  const user = await db.services.users.findOne(
+    { email: "user@example.com" },
+    { session }
+  );
+  
+  const { results } = await db.services.users.find(
+    { status: "active" },
+    { session }
+  );
+});
+```
+
+<Note>
+Read operations within transactions see a consistent snapshot of data and are isolated from concurrent changes.
+</Note>
+
+## Session options
+
+Configure transaction behavior with session options.
+
+```javascript
+await db.services.users.performTransaction(
+  async (session) => {
+    // Transaction operations
+  },
+  {
+    readPreference: 'primary',
+    readConcern: { level: 'snapshot' },
+    writeConcern: { w: 'majority' }
+  }
+);
+```
+
+<ParamField path="readPreference" type="string" default="primary">
+  Read preference for the transaction: `primary`, `primaryPreferred`, `secondary`, `secondaryPreferred`, `nearest`
+</ParamField>
+
+<ParamField path="readConcern" type="object">
+  Read concern level for data consistency: `{ level: 'snapshot' }`, `{ level: 'majority' }`, `{ level: 'local' }`
+</ParamField>
+
+<ParamField path="writeConcern" type="object">
+  Write concern for durability: `{ w: 'majority' }`, `{ w: 1 }`, `{ w: 0 }`
+</ParamField>
+
+## Common patterns
+
+### User registration
+
+```javascript
+const registerUser = async ({ email, password, fullName }) => {
+  return await db.services.users.performTransaction(async (session) => {
+    // Create user
+    const user = await db.services.users.create(
+      { email, password, fullName, status: "pending" },
+      { session, isIncludeSecureFields: true }
+    );
+    
+    // Create verification token
+    const token = await db.services.tokens.create(
+      {
+        user: { _id: user._id },
+        token: generateToken(),
+        otp: generateOTP()
+      },
+      { session }
+    );
+    
+    // Create user profile
+    await db.services.profiles.create(
+      {
+        userId: user._id,
+        preferences: {},
+        settings: {}
+      },
+      { session }
+    );
+    
+    return { user, token };
+  });
+};
+```
+
+### Account deletion
+
+```javascript
+const deleteAccount = async (userId) => {
+  return await db.services.users.performTransaction(async (session) => {
+    // Remove all user data atomically
+    await db.services.users.remove({ _id: userId }, { session });
+    await db.services.tokens.remove({ "user._id": userId }, { session });
+    await db.services.profiles.remove({ userId }, { session });
+    await db.services.orders.remove({ userId }, { session });
+  });
+};
+```
+
+### Transfer balance
+
+```javascript
+const transferBalance = async (fromUserId, toUserId, amount) => {
+  return await db.services.users.performTransaction(async (session) => {
+    // Deduct from sender
+    const sender = await db.services.users.updateOne(
+      { _id: fromUserId },
+      (user) => {
+        if (user.balance < amount) {
+          throw new Error('Insufficient balance');
+        }
+        user.balance -= amount;
+        return user;
+      },
+      { session }
+    );
+    
+    // Add to recipient
+    const recipient = await db.services.users.updateOne(
+      { _id: toUserId },
+      (user) => {
+        user.balance += amount;
+        return user;
+      },
+      { session }
+    );
+    
+    // Create transaction record
+    await db.services.transactions.create(
+      {
+        fromUserId,
+        toUserId,
+        amount,
+        status: "completed",
+        completedAt: new Date().toISOString()
+      },
+      { session }
+    );
+    
+    return { sender, recipient };
+  });
+};
+```
+
+### Order processing
+
+```javascript
+const processOrder = async (orderId) => {
+  return await db.services.orders.performTransaction(async (session) => {
+    // Get order
+    const order = await db.services.orders.findOne(
+      { _id: orderId },
+      { session }
+    );
+    
+    // Update inventory for each item
+    for (const item of order.items) {
+      await db.services.inventory.updateOne(
+        { productId: item.productId },
+        (inv) => {
+          if (inv.quantity < item.quantity) {
+            throw new Error(`Insufficient inventory for ${item.productId}`);
+          }
+          inv.quantity -= item.quantity;
+          return inv;
+        },
+        { session }
+      );
+    }
+    
+    // Update order status
+    const updated = await db.services.orders.updateOne(
+      { _id: orderId },
+      (order) => {
+        order.status = "processing";
+        order.processedAt = new Date().toISOString();
+        return order;
+      },
+      { session }
+    );
+    
+    return updated;
+  });
+};
+```
+
+## Error handling
+
+Handle transaction failures gracefully.
+
+```javascript
+try {
+  const result = await db.services.users.performTransaction(async (session) => {
+    // Perform operations
+  });
+  console.log('Transaction successful:', result);
+} catch (error) {
+  if (error.code === 'INVALID_ARGUMENT') {
+    console.error('Invalid transaction function');
+  } else if (error.errorLabels?.includes('TransientTransactionError')) {
+    console.error('Transient error - retry transaction');
+  } else if (error.errorLabels?.includes('UnknownTransactionCommitResult')) {
+    console.error('Unknown commit result - verify state');
+  } else {
+    console.error('Transaction failed:', error);
+  }
+}
+```
+
+<Accordion title="Common transaction errors">
+  **TransientTransactionError**
+  - Network issues or temporary failures
+  - Can be safely retried
+  - Usually resolves on retry
+
+  **UnknownTransactionCommitResult**
+  - Commit result is unknown
+  - May have committed successfully
+  - Verify state before retrying
+
+  **WriteConflict**
+  - Concurrent modification of the same document
+  - Retry with exponential backoff
+  - Consider document design changes
+
+  **INVALID_ARGUMENT**
+  - Transaction function is not a function
+  - Check that first parameter is async function
+</Accordion>
+
+## Retry logic
+
+Implement automatic retry for transient failures.
+
+```javascript
+const performTransactionWithRetry = async (transactionFn, maxRetries = 3) => {
+  let attempt = 0;
+  
+  while (attempt < maxRetries) {
+    try {
+      return await db.services.users.performTransaction(transactionFn);
+    } catch (error) {
+      attempt++;
+      
+      const isTransient = error.errorLabels?.includes('TransientTransactionError');
+      const canRetry = attempt < maxRetries;
+      
+      if (isTransient && canRetry) {
+        console.log(`Transaction failed (attempt ${attempt}), retrying...`);
+        await new Promise(resolve => setTimeout(resolve, 100 * attempt));
+        continue;
+      }
+      
+      throw error;
+    }
+  }
+};
+
+// Usage
+await performTransactionWithRetry(async (session) => {
+  // Transaction operations
+});
+```
+
+## Limitations
+
+<Warning>
+Transactions have important limitations to consider:
+
+- **MongoDB version**: Requires MongoDB 4.0+ with replica set or sharded cluster
+- **Time limit**: Transactions automatically abort after 60 seconds
+- **Document size**: Total size of modified documents limited to 16MB
+- **Operations**: Some operations are not supported (e.g., creating indexes)
+- **Performance**: Transactions have overhead - use only when atomicity is required
+</Warning>
+
+### Not supported in transactions
+
+```javascript
+// These operations cannot be used within transactions:
+
+// Index operations
+await db.services.users.atomic.createIndex({ email: 1 });
+await db.services.users.atomic.dropIndex('email_1');
+
+// Collection operations
+await db.services.users.atomic.drop();
+
+// Database commands
+await db.services.users.stats();
+```
+
+## Best practices
+
+### Keep transactions short
+
+```javascript
+// Good: Quick, focused transaction
+await db.services.users.performTransaction(async (session) => {
+  await db.services.users.create({ email, password }, { session });
+  await db.services.tokens.create({ userId, token }, { session });
+});
+
+// Avoid: Long-running transaction
+await db.services.users.performTransaction(async (session) => {
+  const users = await db.services.users.find({}, { session });
+  // Processing thousands of users
+  for (const user of users.results) {
+    // Complex operations
+  }
+});
+```
+
+### Prepare data before transaction
+
+```javascript
+// Good: Prepare outside transaction
+const userData = await validateAndPrepareUser(data);
+const token = generateToken();
+
+await db.services.users.performTransaction(async (session) => {
+  await db.services.users.create(userData, { session });
+  await db.services.tokens.create({ token }, { session });
+});
+
+// Avoid: Heavy processing inside transaction
+await db.services.users.performTransaction(async (session) => {
+  const userData = await validateAndPrepareUser(data); // Slow
+  const token = generateToken();
+  await db.services.users.create(userData, { session });
+});
+```
+
+### Use appropriate isolation
+
+```javascript
+// For critical financial operations
+await db.services.users.performTransaction(
+  async (session) => {
+    // Transfer money
+  },
+  {
+    readConcern: { level: 'snapshot' },
+    writeConcern: { w: 'majority' }
+  }
+);
+
+// For less critical operations
+await db.services.users.performTransaction(
+  async (session) => {
+    // Update profile
+  },
+  {
+    writeConcern: { w: 1 }
+  }
+);
+```
+
+### Handle failures gracefully
+
+```javascript
+const createUserWithRetry = async (userData) => {
+  try {
+    return await performTransactionWithRetry(async (session) => {
+      const user = await db.services.users.create(userData, { session });
+      await db.services.profiles.create({ userId: user._id }, { session });
+      return user;
+    });
+  } catch (error) {
+    logger.error('Failed to create user after retries:', error);
+    throw new Error('User registration failed. Please try again.');
+  }
+};
+```
+
+<Tip>
+Only use transactions when you need atomicity across multiple operations. Single-document operations are already atomic in MongoDB.
+</Tip>

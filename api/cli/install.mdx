@@ -1,0 +1,284 @@
+---
+title: hive install
+description: Install Hive plugins from the official plugin repository
+---
+
+The `hive install` command downloads and integrates plugins from the [Hive plugin repository](https://github.com/paralect/hive-plugins) directly into your project.
+
+## Usage
+
+```bash
+hive install <plugin>
+```
+
+## Parameters
+
+<ParamField path="plugin" type="string" required>
+  The name of the plugin to install. This should match a directory name in the [hive-plugins](https://github.com/paralect/hive-plugins) repository.
+</ParamField>
+
+## How it works
+
+When you run `hive install`, the CLI:
+
+1. **Fetches from GitHub** - Connects to `github.com/paralect/hive-plugins` via GitHub API
+2. **Downloads the plugin directory** - Recursively fetches all files from the specified plugin folder
+3. **Copies to your project** - Places plugin files directly into your current working directory
+4. **Preserves structure** - Maintains the original directory structure of the plugin
+
+<Note>
+Plugins are installed by copying files from GitHub. No npm packages are added to your `package.json`.
+</Note>
+
+## Examples
+
+### Install a plugin
+
+```bash
+hive install auth-jwt
+```
+
+Output:
+```bash
+Downloading auth-jwt/src/middlewares/authenticate.js...
+Downloading auth-jwt/src/resources/users/login.endpoint.js...
+Downloading auth-jwt/README.md...
+Plugin installed successfully!
+```
+
+### Install from a specific plugin
+
+```bash
+# Install email notifications plugin
+hive install email-notifications
+
+# Install file upload plugin
+hive install file-upload-s3
+
+# Install Stripe integration
+hive install stripe-payments
+```
+
+<Tip>
+Check the [official plugin repository](https://github.com/paralect/hive-plugins) to see all available plugins.
+</Tip>
+
+## Plugin structure
+
+Plugins typically contain:
+
+```
+auth-jwt/
+├── README.md                # Plugin documentation
+├── src/
+│   ├── resources/           # API resources
+│   │   └── users/
+│   │       ├── login.endpoint.js
+│   │       └── verify.handler.js
+│   ├── middlewares/         # Middleware functions
+│   │   └── authenticate.js
+│   └── services/           # Business logic
+│       └── jwt.service.js
+└── package.json            # Plugin dependencies (optional)
+```
+
+After installation, these files are merged into your project structure:
+
+```
+my-project/
+├── src/
+│   ├── resources/
+│   │   ├── tasks/          # Your existing code
+│   │   └── users/          # From plugin
+│   ├── middlewares/
+│   │   └── authenticate.js # From plugin
+│   └── services/
+│       └── jwt.service.js  # From plugin
+└── README.md               # Plugin README
+```
+
+<Warning>
+If a plugin file conflicts with an existing file in your project, it will be **overwritten**. Always review plugin contents before installing.
+</Warning>
+
+## Available plugins
+
+Common Hive plugins include:
+
+| Plugin | Description |
+|--------|-------------|
+| `auth-jwt` | JWT authentication with login/signup endpoints |
+| `email-notifications` | Email sending via SendGrid or Mailgun |
+| `file-upload-s3` | File uploads to AWS S3 |
+| `stripe-payments` | Stripe payment integration |
+| `websocket-events` | WebSocket support for real-time features |
+| `admin-dashboard` | Basic admin panel resources |
+
+<Note>
+Plugin availability depends on what's published in the [hive-plugins](https://github.com/paralect/hive-plugins) repository. Check the repo for the most up-to-date list.
+</Note>
+
+## Plugin dependencies
+
+Some plugins require additional npm packages. After installing a plugin:
+
+1. **Check the plugin's README** for required dependencies
+2. **Install them manually**:
+   ```bash
+   npm install jsonwebtoken bcrypt
+   ```
+
+3. **Configure environment variables** if needed:
+   ```bash
+   # .env
+   JWT_SECRET=your-secret-key
+   JWT_EXPIRES_IN=7d
+   ```
+
+<CodeGroup>
+```bash Simple plugin install
+hive install auth-jwt
+npm install jsonwebtoken bcrypt
+```
+
+```bash With configuration
+hive install email-notifications
+npm install @sendgrid/mail
+echo "SENDGRID_API_KEY=your-key" >> .env
+```
+
+```bash Multiple plugins
+hive install auth-jwt
+hive install file-upload-s3
+npm install jsonwebtoken bcrypt aws-sdk
+```
+</CodeGroup>
+
+## Creating custom plugins
+
+You can create your own plugins for reuse across projects:
+
+1. **Fork [hive-plugins](https://github.com/paralect/hive-plugins)**
+2. **Create a new directory** with your plugin name
+3. **Add your code** following Hive conventions:
+   ```
+   my-custom-plugin/
+   ├── README.md
+   ├── src/
+   │   ├── resources/
+   │   ├── middlewares/
+   │   └── services/
+   └── package.json (optional)
+   ```
+4. **Submit a PR** to the official repo (optional)
+5. **Install from your fork**:
+   ```bash
+   # Modify CLI to point to your fork
+   # Or install manually by copying files
+   ```
+
+<Tip>
+Keep plugins small and focused. A good plugin does one thing well (auth, payments, uploads, etc.).
+</Tip>
+
+## How downloads work
+
+The install command uses the GitHub Contents API:
+
+```javascript
+// Simplified from cli/helpers/downloadDirectory.js
+const GITHUB_API_URL = 'https://api.github.com/repos';
+const owner = 'paralect';
+const repo = 'hive-plugins';
+
+// Fetches directory tree
+const url = `${GITHUB_API_URL}/${owner}/${repo}/contents/${plugin}`;
+const response = await axios.get(url);
+
+// Downloads each file
+for (const item of response.data) {
+  if (item.type === 'file') {
+    await downloadFile(item.download_url, localPath);
+  }
+}
+```
+
+<Note>
+No GitHub authentication is required for public repositories. Rate limits apply (60 requests/hour for unauthenticated requests).
+</Note>
+
+## Troubleshooting
+
+### Plugin not found
+
+```bash
+# Error: 404 Not Found
+# The plugin doesn't exist in the repo
+```
+
+**Solution**: Check available plugins at [github.com/paralect/hive-plugins](https://github.com/paralect/hive-plugins)
+
+### Network errors
+
+```bash
+# Error: connect ECONNREFUSED
+```
+
+**Solution**: Check your internet connection and GitHub status:
+```bash
+curl https://api.github.com/repos/paralect/hive-plugins
+```
+
+### Rate limit exceeded
+
+```bash
+# Error: 403 Forbidden (rate limit)
+```
+
+**Solution**: Wait an hour or authenticate with GitHub:
+```bash
+# Set GitHub token in environment
+export GITHUB_TOKEN=your-personal-access-token
+hive install auth-jwt
+```
+
+### File conflicts
+
+If the plugin overwrites your files:
+
+```bash
+# Check what changed
+git diff
+
+# Restore if needed
+git checkout -- src/resources/users/
+
+# Manually merge the plugin code
+```
+
+<Warning>
+Always commit your changes before installing a plugin so you can easily revert if needed:
+
+```bash
+git add .
+git commit -m "Before installing plugin"
+hive install some-plugin
+```
+</Warning>
+
+## Best practices
+
+1. **Review plugin code** before installing - check the [GitHub repo](https://github.com/paralect/hive-plugins) first
+2. **Install early** in your project lifecycle to avoid conflicts
+3. **Read the README** - plugins often have specific setup requirements
+4. **Version control** - commit before and after plugin installation
+5. **Test thoroughly** - plugins may change routing or middleware behavior
+
+<Tip>
+Treat plugins as starting points, not finished solutions. Customize them to fit your specific needs.
+</Tip>
+
+## See also
+
+- [Hive Plugin Repository](https://github.com/paralect/hive-plugins) - Official plugin source
+- [hive init](/api/cli/init) - Initialize a new project

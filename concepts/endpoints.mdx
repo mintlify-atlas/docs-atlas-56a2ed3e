@@ -1,0 +1,688 @@
+---
+title: Endpoints
+description: Endpoint structure, routing, and request handling
+---
+
+Endpoints are API routes that handle HTTP requests. Each endpoint is a file that exports a handler, validation schema, and route configuration.
+
+## Endpoint file structure
+
+Every endpoint file must export four things:
+
+```javascript
+import { z } from 'zod';
+import db from 'db';
+import isAuthorized from 'middlewares/isAuthorized';
+
+const tasksService = db.services.tasks;
+
+// 1. Middlewares (optional)
+export const middlewares = [isAuthorized];
+
+// 2. Request validation schema (required)
+export const requestSchema = z.object({
+  title: z.string(),
+  status: z.enum(['pending', 'in_progress', 'done']).default('pending'),
+});
+
+// 3. Handler function (required)
+export const handler = async (ctx) => {
+  const { title, status } = ctx.validatedData;
+  
+  const task = await tasksService.create({
+    title,
+    status,
+    createdBy: ctx.state.user,
+  });
+  
+  ctx.body = task;
+};
+
+// 4. Endpoint configuration (required)
+export const endpoint = {
+  method: 'POST',
+  url: '/',
+};
+```
+
+## How routing works
+
+Hive automatically generates routes based on:
+
+1. **Resource name** — Folder name in `resources/`
+2. **Endpoint URL** — From the `endpoint.url` export
+
+Example:
+
+```
+File: src/resources/tasks/endpoints/create.js
+Endpoint URL: /
+Result: POST /tasks
+```
+
+```
+File: src/resources/users/endpoints/getCurrentUser.js
+Endpoint URL: /me
+Result: GET /users/me
+```
+
+<Tip>
+  The resource name is automatically prepended to the URL unless you use `absoluteUrl`.
+</Tip>
+
+## Real example from source
+
+From `starter/src/resources/users/endpoints/getCurrentUser.js:1`:
+
+```javascript
+import { z } from 'zod';
+import isAuthorized from 'middlewares/isAuthorized';
+
+export const handler = async (ctx) => {
+  ctx.body = ctx.state.user;
+};
+
+export const middlewares = [isAuthorized];
+export const requestSchema = z.object({});
+
+export const endpoint = {
+  method: "GET",
+  url: "/me",
+};
+```
+
+This creates: `GET /users/me`
+
+## Endpoint configuration
+
+The `endpoint` export defines the route:
+
+```javascript
+export const endpoint = {
+  method: 'GET',    // HTTP method
+  url: '/',         // URL path (relative to resource)
+};
+```
+
+### HTTP methods
+
+Supported methods:
+
+```javascript
+// GET - Retrieve data
+export const endpoint = {
+  method: 'GET',
+  url: '/',
+};
+
+// POST - Create new resource
+export const endpoint = {
+  method: 'POST',
+  url: '/',
+};
+
+// PUT - Update resource
+export const endpoint = {
+  method: 'PUT',
+  url: '/:id',
+};
+
+// DELETE - Remove resource
+export const endpoint = {
+  method: 'DELETE',
+  url: '/:id',
+};
+
+// PATCH - Partial update
+export const endpoint = {
+  method: 'PATCH',
+  url: '/:id',
+};
+```
+
+### URL parameters
+
+Define dynamic segments with `:paramName`:
+
+```javascript
+// src/resources/tasks/endpoints/getById.js
+export const requestSchema = z.object({
+  id: z.string(),
+});
+
+export const handler = async (ctx) => {
+  const { id } = ctx.validatedData;
+  const task = await tasksService.findOne({ _id: id });
+  
+  if (!task) ctx.throw(404, 'Task not found');
+  
+  ctx.body = task;
+};
+
+export const endpoint = {
+  method: 'GET',
+  url: '/:id',  // Creates GET /tasks/:id
+};
+```
+
+Access params via `ctx.validatedData` after validation.
+
+### Absolute URLs
+
+Bypass resource prefix with `absoluteUrl`:
+
+```javascript
+export const endpoint = {
+  method: 'GET',
+  absoluteUrl: '/api/v2/special',  // Not prefixed with resource name
+};
+```
+
+Or use `$HOST/` prefix:
+
+```javascript
+export const endpoint = {
+  method: 'GET',
+  url: '$HOST/webhooks/stripe',  // Becomes /webhooks/stripe
+};
+```
+
+<Note>
+  From `starter/src/routes/index.js:108`, URLs starting with `$HOST/` are treated as absolute and mounted at the root.
+</Note>
+
+## Request validation
+
+Every endpoint validates input with Zod:
+
+```javascript
+import { z } from 'zod';
+
+export const requestSchema = z.object({
+  // From request body
+  title: z.string(),
+  description: z.string().optional(),
+  
+  // From query params
+  page: z.coerce.number().default(1),
+  perPage: z.coerce.number().default(20),
+  
+  // From URL params
+  id: z.string(),
+});
+```
+
+Validation combines:
+- Request body (`ctx.request.body`)
+- Query parameters (`ctx.query`)
+- URL parameters (`ctx.params`)
+
+<CodeGroup>
+```javascript GET /tasks?page=2&perPage=50
+export const requestSchema = z.object({
+  page: z.coerce.number().default(1),
+  perPage: z.coerce.number().default(20),
+});
+
+export const handler = async (ctx) => {
+  const { page, perPage } = ctx.validatedData;
+  // page = 2, perPage = 50
+};
+```
+
+```javascript POST /tasks
+export const requestSchema = z.object({
+  title: z.string(),
+  status: z.enum(['pending', 'in_progress', 'done']),
+});
+
+export const handler = async (ctx) => {
+  const { title, status } = ctx.validatedData;
+  // Validated body data
+};
+```
+
+```javascript PUT /tasks/:id
+export const requestSchema = z.object({
+  id: z.string(),
+  title: z.string().optional(),
+});
+
+export const handler = async (ctx) => {
+  const { id, title } = ctx.validatedData;
+  // id from URL, title from body
+};
+```
+</CodeGroup>
+
+<Warning>
+  Always use `z.coerce.number()` for query params. Query params are strings by default.
+</Warning>
+
+## Handler function
+
+The handler receives a Koa context object:
+
+```javascript
+export const handler = async (ctx) => {
+  // Validated input
+  const data = ctx.validatedData;
+  
+  // Current user (if authenticated)
+  const user = ctx.state.user;
+  
+  // Request details
+  const method = ctx.request.method;
+  const headers = ctx.headers;
+  const query = ctx.query;
+  const params = ctx.params;
+  
+  // Set response
+  ctx.body = { success: true };
+  ctx.status = 201;
+};
+```
+
+### Context properties
+
+| Property | Description |
+|----------|-------------|
+| `ctx.validatedData` | Validated request data (body + query + params) |
+| `ctx.state.user` | Current authenticated user |
+| `ctx.request.body` | Raw request body |
+| `ctx.query` | URL query parameters |
+| `ctx.params` | URL path parameters |
+| `ctx.headers` | Request headers |
+| `ctx.body` | Set response body |
+| `ctx.status` | Set response status code |
+| `ctx.throw(code, message)` | Throw HTTP error |
+
+### Setting the response
+
+Return data by setting `ctx.body`:
+
+```javascript
+export const handler = async (ctx) => {
+  const task = await tasksService.findOne({ _id: ctx.validatedData.id });
+  
+  ctx.body = task;  // Automatically serialized to JSON
+};
+```
+
+Or return a value (it becomes `ctx.body`):
+
+```javascript
+export const handler = async (ctx) => {
+  const tasks = await tasksService.find({});
+  return tasks;  // Same as ctx.body = tasks
+};
+```
+
+### Error handling
+
+Throw errors with `ctx.throw()`:
+
+```javascript
+export const handler = async (ctx) => {
+  const task = await tasksService.findOne({ _id: ctx.validatedData.id });
+  
+  if (!task) {
+    ctx.throw(404, 'Task not found');
+  }
+  
+  if (task.createdBy._id !== ctx.state.user._id) {
+    ctx.throw(403, 'Not authorized');
+  }
+  
+  ctx.body = task;
+};
+```
+
+Common status codes:
+- `400` — Bad request (validation error)
+- `401` — Unauthorized (not logged in)
+- `403` — Forbidden (insufficient permissions)
+- `404` — Not found
+- `500` — Internal server error
+
+## Middlewares
+
+Middlewares run before the handler. They can:
+- Check authentication
+- Validate permissions
+- Transform request data
+- Add context to `ctx.state`
+
+```javascript
+import isAuthorized from 'middlewares/isAuthorized';
+import shouldExist from 'middlewares/shouldExist';
+
+export const middlewares = [
+  isAuthorized,  // Ensures user is logged in
+  shouldExist({ name: 'tasks', paramName: 'id' }),  // Validates task exists
+];
+
+export const handler = async (ctx) => {
+  // User is guaranteed to be logged in
+  // Task is guaranteed to exist (available in ctx.state)
+  const user = ctx.state.user;
+  const task = ctx.state.task;
+};
+```
+
+### Built-in middlewares
+
+<AccordionGroup>
+  <Accordion title="isAuthorized">
+    Requires user to be authenticated.
+    
+    ```javascript
+    import isAuthorized from 'middlewares/isAuthorized';
+    
+    export const middlewares = [isAuthorized];
+    
+    export const handler = async (ctx) => {
+      // ctx.state.user is guaranteed to exist
+      console.log(ctx.state.user.email);
+    };
+    ```
+    
+    Throws 401 if user is not logged in.
+  </Accordion>
+  
+  <Accordion title="allowNoAuth">
+    Marks endpoint as public (bypasses global auth requirement).
+    
+    ```javascript
+    import allowNoAuth from 'middlewares/allowNoAuth';
+    
+    export const middlewares = [allowNoAuth];
+    
+    export const handler = async (ctx) => {
+      // Anyone can access this
+      ctx.body = { message: 'Hello world' };
+    };
+    ```
+  </Accordion>
+  
+  <Accordion title="shouldExist">
+    Validates that a document exists before running handler.
+    
+    ```javascript
+    import shouldExist from 'middlewares/shouldExist';
+    
+    export const middlewares = [
+      shouldExist({ name: 'tasks', paramName: 'id' })
+    ];
+    
+    export const handler = async (ctx) => {
+      // ctx.state.task is guaranteed to exist
+      const task = ctx.state.task;
+    };
+    ```
+    
+    Throws 404 if document doesn't exist.
+  </Accordion>
+  
+  <Accordion title="shouldNotExist">
+    Ensures a document doesn't already exist.
+    
+    ```javascript
+    import shouldNotExist from 'middlewares/shouldNotExist';
+    
+    export const middlewares = [
+      shouldNotExist({ name: 'users', query: (ctx) => ({ email: ctx.validatedData.email }) })
+    ];
+    
+    export const handler = async (ctx) => {
+      // Email is guaranteed to be unique
+      const user = await usersService.create(ctx.validatedData);
+    };
+    ```
+    
+    Throws 409 if document exists.
+  </Accordion>
+  
+  <Accordion title="attachUser">
+    Attaches user to `ctx.state.user` if token is valid (doesn't throw if missing).
+    
+    ```javascript
+    import attachUser from 'middlewares/attachUser';
+    
+    export const middlewares = [attachUser];
+    
+    export const handler = async (ctx) => {
+      if (ctx.state.user) {
+        // User is logged in
+      } else {
+        // Anonymous user
+      }
+    };
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Middleware order
+
+Middlewares run in order with `runOrder` property:
+
+```javascript
+// Custom middleware with priority
+const checkAdmin = async (ctx, next) => {
+  if (!ctx.state.user?.isAdmin) {
+    ctx.throw(403, 'Admin only');
+  }
+  await next();
+};
+checkAdmin.runOrder = 2;  // Runs after auth (0-1)
+
+export const middlewares = [
+  isAuthorized,  // runOrder defaults to 1
+  checkAdmin,    // runOrder = 2, runs second
+];
+```
+
+From `starter/src/routes/index.js:139`:
+
+```javascript
+middlewares = middlewares.map(middleware => {
+  middleware.runOrder = _.isNumber(middleware.runOrder) ? middleware.runOrder : 1;
+  return middleware;
+});
+
+// Sort by runOrder before applying
+..._.sortBy(middlewares, m => m.runOrder)
+```
+
+## Common patterns
+
+### List endpoint with pagination
+
+```javascript
+import { z } from 'zod';
+import db from 'db';
+
+const tasksService = db.services.tasks;
+
+export const requestSchema = z.object({
+  page: z.coerce.number().default(1),
+  perPage: z.coerce.number().default(20),
+  status: z.enum(['pending', 'in_progress', 'done']).optional(),
+});
+
+export const handler = async (ctx) => {
+  const { page, perPage, status } = ctx.validatedData;
+  
+  const query = {};
+  if (status) query.status = status;
+  
+  const result = await tasksService.find(query, {
+    page,
+    perPage,
+    sort: '-createdOn',  // Newest first
+  });
+  
+  return result;  // { results: [...], count: 42 }
+};
+
+export const endpoint = {
+  method: 'GET',
+  url: '/',
+};
+```
+
+### Create endpoint
+
+```javascript
+import { z } from 'zod';
+import db from 'db';
+import isAuthorized from 'middlewares/isAuthorized';
+
+const tasksService = db.services.tasks;
+
+export const requestSchema = z.object({
+  title: z.string(),
+  description: z.string().optional(),
+  dueOn: z.coerce.date().optional(),
+});
+
+export const handler = async (ctx) => {
+  const task = await tasksService.create({
+    ...ctx.validatedData,
+    createdBy: {
+      _id: ctx.state.user._id,
+      fullName: ctx.state.user.fullName,
+    },
+  });
+  
+  ctx.status = 201;
+  return task;
+};
+
+export const middlewares = [isAuthorized];
+
+export const endpoint = {
+  method: 'POST',
+  url: '/',
+};
+```
+
+### Update endpoint
+
+```javascript
+import { z } from 'zod';
+import db from 'db';
+import isAuthorized from 'middlewares/isAuthorized';
+
+const tasksService = db.services.tasks;
+
+export const requestSchema = z.object({
+  id: z.string(),
+  title: z.string().optional(),
+  status: z.enum(['pending', 'in_progress', 'done']).optional(),
+});
+
+export const handler = async (ctx) => {
+  const { id, ...updates } = ctx.validatedData;
+  
+  await tasksService.updateOne(
+    { _id: id },
+    (doc) => ({ ...doc, ...updates })
+  );
+  
+  const updated = await tasksService.findOne({ _id: id });
+  return updated;
+};
+
+export const middlewares = [isAuthorized];
+
+export const endpoint = {
+  method: 'PUT',
+  url: '/:id',
+};
+```
+
+### Delete endpoint
+
+```javascript
+import { z } from 'zod';
+import db from 'db';
+import isAuthorized from 'middlewares/isAuthorized';
+
+const tasksService = db.services.tasks;
+
+export const requestSchema = z.object({
+  id: z.string(),
+});
+
+export const handler = async (ctx) => {
+  const { id } = ctx.validatedData;
+  
+  const task = await tasksService.findOne({ _id: id });
+  
+  if (!task) {
+    ctx.throw(404, 'Task not found');
+  }
+  
+  if (task.createdBy._id !== ctx.state.user._id) {
+    ctx.throw(403, 'Not authorized');
+  }
+  
+  await tasksService.remove({ _id: id });
+  
+  return { success: true };
+};
+
+export const middlewares = [isAuthorized];
+
+export const endpoint = {
+  method: 'DELETE',
+  url: '/:id',
+};
+```
+
+## Best practices
+
+<AccordionGroup>
+  <Accordion title="Always validate input">
+    Never trust client data. Define a complete `requestSchema` even if it's empty:
+    
+    ```javascript
+    export const requestSchema = z.object({});
+    ```
+  </Accordion>
+  
+  <Accordion title="Use specific status codes">
+    Don't return 200 for everything:
+    
+    - `200` — Success (GET, PUT, DELETE)
+    - `201` — Created (POST)
+    - `204` — No content (DELETE with no body)
+    - `400` — Validation error
+    - `401` — Not authenticated
+    - `403` — Not authorized
+    - `404` — Not found
+  </Accordion>
+  
+  <Accordion title="Keep handlers focused">
+    Extract complex logic to methods:
+    
+    ```javascript
+    import assignTask from '../methods/assignTask';
+    
+    export const handler = async (ctx) => {
+      const result = await assignTask(ctx.validatedData);
+      return result;
+    };
+    ```
+  </Accordion>
+  
+  <Accordion title="Return consistent shapes">
+    List endpoints should return `{ results, count }`:
+    
+    ```javascript
+    return await tasksService.find({}, { page, perPage });
+    // { results: [...], count: 42 }
+    ```
+  </Accordion>
+</AccordionGroup>

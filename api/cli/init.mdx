@@ -1,0 +1,167 @@
+---
+title: hive init
+description: Initialize a new Hive project with the standard directory structure and configuration files
+---
+
+The `hive init` command scaffolds a new Hive project with all the essential directories, configuration files, and boilerplate needed to start building.
+
+## Usage
+
+```bash
+hive init [projectName]
+```
+
+## Parameters
+
+<ParamField path="projectName" type="string" optional>
+  The name of your project. If not provided, you'll be prompted to enter one interactively. Defaults to `my-hive-app` if left empty.
+</ParamField>
+
+## What it creates
+
+When you run `hive init`, the following structure is generated:
+
+```
+my-hive-app/
+├── src/
+│   ├── resources/      # Your API resources (models + endpoints)
+│   ├── middlewares/    # Custom middleware functions
+│   ├── services/       # Business logic and external integrations
+│   └── scheduler/
+│       └── handlers/   # Cron job handlers
+├── .cursor/            # Cursor AI configuration
+├── package.json        # NPM dependencies and scripts
+├── .env                # Environment variables
+└── .gitignore          # Git ignore rules
+```
+
+### Generated files
+
+**package.json**
+```json
+{
+  "name": "my-hive-app",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "hive run ./src",
+    "start": "hive run ./src"
+  },
+  "dependencies": {}
+}
+```
+
+**.env**
+```bash
+MONGO_URI=mongodb://localhost:27017/my-hive-app
+PORT=3001
+NODE_ENV=development
+```
+
+**.gitignore**
+```
+node_modules
+.hive
+.env
+```
+
+<Note>
+The `.hive` directory is auto-generated when you run `hive run` and should never be committed to version control.
+</Note>
+
+## Examples
+
+### Interactive mode
+
+```bash
+hive init
+```
+
+You'll be prompted:
+```
+? Project name: (my-hive-app)
+```
+
+### Direct project name
+
+```bash
+hive init todo-app
+```
+
+Output:
+```bash
+🐝 Creating Hive project: todo-app
+
+✅ Project created!
+
+Next steps:
+
+  cd todo-app
+  hive run ./src
+
+Start building with AI commands:
+  add-resource tasks
+  add-endpoint tasks post title, status
+```
+
+## Next steps
+
+After initialization:
+
+1. **Navigate to your project**
+   ```bash
+   cd my-hive-app
+   ```
+
+2. **Install Hive framework**
+   ```bash
+   npm install @paralect/hive
+   ```
+
+3. **Start the development server**
+   ```bash
+   npm run dev
+   # or
+   hive run ./src
+   ```
+
+4. **Start building with AI**
+   
+   Use Cursor AI commands to scaffold resources:
+   ```bash
+   add-resource users
+   add-endpoint users post email, password
+   ```
+
+<Tip>
+Hive projects are designed to work seamlessly with Cursor AI. The `.cursor` directory contains skills that teach Cursor how to build Hive applications.
+</Tip>
+
+## Common patterns
+
+<CodeGroup>
+```bash Simple project
+hive init my-app
+cd my-app
+npm install @paralect/hive
+npm run dev
+```
+
+```bash Monorepo structure
+mkdir my-monorepo && cd my-monorepo
+hive init api
+cd api
+npm install @paralect/hive
+```
+
+```bash Team project
+hive init acme-platform
+cd acme-platform
+git init
+git add .
+git commit -m "Initial Hive project"
+```
+</CodeGroup>
+
+<Warning>
+Make sure MongoDB is running before starting your Hive server. The default `.env` expects MongoDB at `mongodb://localhost:27017`.
+</Warning>

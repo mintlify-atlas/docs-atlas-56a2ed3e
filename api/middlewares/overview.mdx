@@ -1,0 +1,314 @@
+---
+title: Middleware system
+description: Control request flow with built-in and custom middlewares
+---
+
+Middlewares in Hive are functions that run before your endpoint handlers. They validate requests, authenticate users, load resources, and control the request lifecycle.
+
+## How middlewares work
+
+Middlewares are applied to endpoints in the order they're defined. Each middleware can:
+- Modify the request context (`ctx`)
+- Validate or transform data
+- Short-circuit the request (return early)
+- Pass control to the next middleware by calling `next()`
+
+```javascript
+export const middlewares = [isAuthorized, shouldExist('posts')];
+
+export const handler = async (ctx) => {
+  // Middlewares run first
+  // ctx.state.user is now available (from isAuthorized)
+  // ctx.state.post is now available (from shouldExist)
+  ctx.body = ctx.state.post;
+};
+```
+
+## Built-in middlewares
+
+Hive provides middlewares for common patterns:
+
+<CardGroup cols={2}>
+  <Card title="isAuthorized" icon="lock" href="/api/middlewares/is-authorized">
+    Require authentication for protected endpoints
+  </Card>
+  <Card title="allowNoAuth" icon="lock-open" href="/api/middlewares/allow-no-auth">
+    Skip authentication for public endpoints
+  </Card>
+  <Card title="shouldExist" icon="database" href="/api/middlewares/should-exist">
+    Load and validate resource existence
+  </Card>
+  <Card title="attachUser" icon="user" href="/api/middlewares/attach-user">
+    Attach authenticated user to context
+  </Card>
+</CardGroup>
+
+## Middleware execution order
+
+Middlewares have a `runOrder` property that controls execution sequence:
+
+```javascript
+const myMiddleware = async (ctx, next) => {
+  // Your logic
+  await next();
+};
+
+myMiddleware.runOrder = -1; // Run early
+```
+
+<Note>
+  Lower `runOrder` values run first. Default is `1`. Negative values run before validation.
+</Note>
+
+### Default execution flow
+
+1. **Global middlewares** (`runOrder: 0` or less)
+2. **Request validation** (automatic)
+3. **Endpoint middlewares** (`runOrder: 1` by default)
+4. **Handler function**
+
+## Using middlewares
+
+### Basic usage
+
+Apply middlewares to an endpoint by exporting a `middlewares` array:
+
+```javascript
+import isAuthorized from 'middlewares/isAuthorized';
+import { z } from 'zod';
+
+export const middlewares = [isAuthorized];
+
+export const handler = async (ctx) => {
+  ctx.body = ctx.state.user;
+};
+
+export const requestSchema = z.object({});
+
+export const endpoint = {
+  method: "GET",
+  url: "/me",
+};
+```
+
+### Middlewares with arguments
+
+Some middlewares accept configuration:
+
+```javascript
+import shouldExist from 'middlewares/shouldExist';
+
+export const middlewares = [
+  isAuthorized,
+  shouldExist('posts', {
+    criteria: (ctx) => ({ _id: ctx.params.postId }),
+    ctxName: 'post'
+  })
+];
+
+export const handler = async (ctx) => {
+  // ctx.state.post is loaded by shouldExist
+  ctx.body = ctx.state.post;
+};
+```
+
+### String-based middleware references
+
+Reference middlewares by name (if registered in `/middlewares` directory):
+
+```javascript
+export const middlewares = ['isAuthorized', 'myCustomMiddleware'];
+```
+
+### Middleware with args as object
+
+Pass arguments using object notation:
+
+```javascript
+export const middlewares = [
+  'isAuthorized',
+  {
+    name: 'shouldExist',
+    args: ['posts', { criteria: (ctx) => ({ _id: ctx.params.postId }) }]
+  }
+];
+```
+
+## Creating custom middlewares
+
+Create a middleware file in `/src/middlewares/`:
+
+<CodeGroup>
+```javascript /src/middlewares/checkRole.js
+export default (requiredRole) => {
+  return async (ctx, next) => {
+    const { user } = ctx.state;
+
+    if (!user) {
+      ctx.throw(401, { message: 'Authentication required' });
+    }
+
+    if (user.role !== requiredRole) {
+      ctx.throw(403, { message: 'Insufficient permissions' });
+    }
+
+    await next();
+  };
+};
+```
+
+```javascript Usage
+import checkRole from 'middlewares/checkRole';
+
+export const middlewares = [
+  isAuthorized,
+  checkRole('admin')
+];
+
+export const handler = async (ctx) => {
+  // Only admins reach here
+  ctx.body = { message: 'Admin access granted' };
+};
+```
+</CodeGroup>
+
+## Global middlewares
+
+Apply middlewares to all endpoints using the `global/` directory:
+
+```javascript /src/middlewares/global/tryToAttachUser.js
+export default async (ctx, next) => {
+  // Extract token from headers/cookies
+  const accessToken = ctx.cookies.get('access_token') || 
+    ctx.headers.authorization?.replace('Bearer', '').trim();
+
+  ctx.state.accessToken = accessToken;
+
+  await next();
+};
+```
+
+<Warning>
+  Global middlewares run on **every** request. Keep them lightweight.
+</Warning>
+
+## Context state
+
+Middlewares communicate via `ctx.state`:
+
+| Property | Set By | Description |
+|----------|--------|-------------|
+| `ctx.state.user` | `isAuthorized`, `attachUser` | Authenticated user object |
+| `ctx.state.accessToken` | Global middlewares | JWT or session token |
+| `ctx.state.isSkipAuth` | `allowNoAuth` | Skip authentication check |
+| `ctx.validatedData` | `validate` | Validated request data |
+
+<Tip>
+  Use `ctx.state` to pass data between middlewares. Avoid modifying `ctx.request` directly.
+</Tip>
+
+## Skipping authentication
+
+Combine `isRequireAuthAllEndpoints` config with `allowNoAuth`:
+
+```javascript /src/app-config/app.js
+export default {
+  _hive: {
+    isRequireAuthAllEndpoints: true
+  }
+};
+```
+
+```javascript /src/resources/auth/endpoints/login.js
+import allowNoAuth from 'middlewares/allowNoAuth';
+
+export const middlewares = [allowNoAuth];
+
+export const handler = async (ctx) => {
+  // Public endpoint despite global auth requirement
+};
+```
+
+## Error handling
+
+Throw errors using `ctx.throw()`:
+
+```javascript
+export default async (ctx, next) => {
+  if (!ctx.state.user) {
+    ctx.throw(401, { message: 'Unauthorized' });
+  }
+
+  if (!ctx.state.user.emailVerified) {
+    ctx.throw(403, { message: 'Email verification required' });
+  }
+
+  await next();
+};
+```
+
+<Note>
+  Hive automatically formats errors and logs them. No need to manually catch.
+</Note>
+
+## Best practices
+
+<AccordionGroup>
+  <Accordion title="Keep middlewares focused">
+    Each middleware should do one thing. Prefer multiple small middlewares over one large one.
+
+    ```javascript
+    // Good
+    export const middlewares = [isAuthorized, checkRole('admin'), rateLimit];
+
+    // Avoid
+    export const middlewares = [doEverything];
+    ```
+  </Accordion>
+
+  <Accordion title="Set runOrder strategically">
+    Authentication should run before resource loading:
+
+    ```javascript
+    isAuthorized.runOrder = 0;
+    shouldExist('posts').runOrder = 1; // Default
+    ```
+  </Accordion>
+
+  <Accordion title="Validate in the right place">
+    - Simple validation: Use Zod schemas in `requestSchema`
+    - Business logic validation: Use custom middlewares
+    - Database constraints: Use schema validation
+  </Accordion>
+
+  <Accordion title="Reuse middlewares">
+    Extract common patterns into shared middlewares:
+
+    ```javascript
+    // /src/middlewares/requireEmailVerified.js
+    export default async (ctx, next) => {
+      if (!ctx.state.user?.emailVerified) {
+        ctx.throw(403, { message: 'Email verification required' });
+      }
+      await next();
+    };
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="isAuthorized" icon="lock" href="/api/middlewares/is-authorized">
+    Learn about authentication
+  </Card>
+  <Card title="shouldExist" icon="database" href="/api/middlewares/should-exist">
+    Load resources from database
+  </Card>
+  <Card title="Endpoints" icon="webhook" href="/concepts/endpoints">
+    See how endpoints work
+  </Card>
+  <Card title="Validation" icon="check" href="/api/schemas/validation">
+    Request validation with Zod
+  </Card>
+</CardGroup>

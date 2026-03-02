@@ -1,0 +1,270 @@
+---
+title: hive prepare
+description: Prepare the Hive runtime environment without starting the server
+---
+
+The `hive prepare` command sets up the `.hive` directory and copies the framework files without starting the server. This is useful for deployment pipelines, Docker builds, or CI/CD workflows.
+
+## Usage
+
+```bash
+hive prepare [dirPath]
+```
+
+## Parameters
+
+<ParamField path="dirPath" type="string" default=".">
+  Path to your source directory. If not provided, defaults to the current directory.
+</ParamField>
+
+## How it works
+
+The `prepare` command performs a subset of what `hive run` does:
+
+1. **Sets `HIVE_SRC`** - Points to your source directory
+2. **Creates `.hive` directory** - If it doesn't exist
+3. **Copies framework files** - From `starter/` to `.hive/`
+4. **Does NOT start the server** - Just prepares the environment
+
+<Note>
+This command is typically used in automated build processes where you need the framework files in place before running the application.
+</Note>
+
+## Examples
+
+### Basic preparation
+
+```bash
+hive prepare ./src
+```
+
+No output - the command runs silently and exits when done.
+
+### In a Dockerfile
+
+```dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copy application files
+COPY package*.json ./
+COPY src ./src
+
+# Install dependencies
+RUN npm install
+
+# Prepare Hive framework
+RUN npx hive prepare ./src
+
+# Start the application
+CMD ["node", ".hive/src/app.js"]
+```
+
+<Tip>
+Using `hive prepare` in Docker builds ensures the `.hive` directory is baked into the image, making container startup faster.
+</Tip>
+
+### In CI/CD pipeline
+
+```yaml
+# .github/workflows/deploy.yml
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - name: Install dependencies
+        run: npm install
+      
+      - name: Prepare Hive
+        run: npx hive prepare ./src
+      
+      - name: Run tests
+        run: npm test
+      
+      - name: Deploy
+        run: npm run deploy
+```
+
+## Use cases
+
+### Docker multi-stage builds
+
+Optimize your Docker image by preparing Hive in the build stage:
+
+```dockerfile
+# Build stage
+FROM node:18-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY src ./src
+RUN npx hive prepare ./src
+
+# Production stage
+FROM node:18-alpine
+WORKDIR /app
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/.hive ./.hive
+COPY --from=builder /app/src ./src
+CMD ["node", ".hive/src/app.js"]
+```
+
+### Serverless deployment
+
+Prepare the framework before packaging for AWS Lambda or similar:
+
+```bash
+# Prepare framework
+hive prepare ./src
+
+# Package for deployment
+zip -r deployment.zip .hive src node_modules
+
+# Deploy
+aws lambda update-function-code \
+  --function-name my-hive-app \
+  --zip-file fileb://deployment.zip
+```
+
+### Testing environment
+
+Prepare once, run tests multiple times:
+
+```bash
+# Setup
+hive prepare ./src
+
+# Run different test suites
+MONGO_URI=mongodb://localhost/test-db-1 npm test
+MONGO_URI=mongodb://localhost/test-db-2 npm test
+```
+
+<CodeGroup>
+```bash Manual preparation
+hive prepare ./src
+ls -la .hive  # Verify framework files
+```
+
+```bash With custom directory
+cd my-project
+hive prepare ./api/src
+```
+
+```bash In package.json script
+{
+  "scripts": {
+    "prepare:hive": "hive prepare ./src",
+    "build": "npm run prepare:hive && webpack"
+  }
+}
+```
+</CodeGroup>
+
+## What gets created
+
+After running `hive prepare`, your project structure looks like:
+
+```
+my-project/
+├── src/                    # Your application code
+│   ├── resources/
+│   ├── middlewares/
+│   └── services/
+├── .hive/                  # Generated framework files
+│   ├── src/
+│   │   ├── app.js         # Server bootstrap
+│   │   ├── db.js          # Database layer
+│   │   ├── resources/     # Built-in resources
+│   │   ├── middlewares/   # Framework middleware
+│   │   └── helpers/       # Utilities
+│   ├── package.json
+│   └── bin/
+└── node_modules/
+```
+
+<Warning>
+The `.hive` directory is auto-generated. Any manual changes will be overwritten the next time you run `hive prepare` or `hive run`.
+</Warning>
+
+## Comparison with hive run
+
+| Command | Prepares `.hive` | Starts server | Use case |
+|---------|------------------|---------------|----------|
+| `hive prepare` | ✅ Yes | ❌ No | Docker builds, CI/CD, testing setup |
+| `hive run` | ✅ Yes | ✅ Yes | Local development |
+
+## Environment variables
+
+The `prepare` command sets:
+
+```bash
+HIVE_SRC=/absolute/path/to/your/src
+```
+
+This tells the framework where to find your resources, endpoints, and handlers when the server eventually starts.
+
+<Note>
+You don't need to set `HIVE_SRC` manually - the CLI handles this automatically.
+</Note>
+
+## Troubleshooting
+
+### Permission denied
+
+If you get permission errors:
+
+```bash
+# Make sure you have write access to the project directory
+sudo chown -R $USER:$USER .
+
+# Then retry
+hive prepare ./src
+```
+
+### Directory not found
+
+```bash
+# Make sure the source directory exists
+ls ./src
+
+# Create it if needed
+mkdir -p ./src/resources
+
+# Then prepare
+hive prepare ./src
+```
+
+### Stale .hive directory
+
+If you're seeing old framework code:
+
+```bash
+# Remove the old .hive directory
+rm -rf .hive
+
+# Prepare fresh
+hive prepare ./src
+```
+
+<Tip>
+In production builds, always run `hive prepare` to ensure you have the latest framework files.
+</Tip>
+
+## See also
+
+- [hive run](/api/cli/run) - Prepare and start the server
+- [hive deploy](/api/cli/deploy) - Build for production deployment

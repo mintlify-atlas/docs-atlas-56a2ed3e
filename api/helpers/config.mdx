@@ -1,0 +1,232 @@
+---
+title: Config
+description: Application configuration system with environment-based settings and runtime initialization
+---
+
+The config system manages your application's configuration, loading environment variables and merging framework defaults with your app-specific settings.
+
+## Overview
+
+Hive's configuration system provides:
+- Environment variable loading from `.env` files
+- Environment-based configuration (development, production, etc.)
+- Runtime initialization for plugin configs
+- Built-in MongoDB, Redis, and SMTP configuration
+- Type-safe config validation with `assert()`
+
+<Note>
+The config system automatically loads from both framework and app-level `.env` files when `HIVE_SRC` is set.
+</Note>
+
+## Basic usage
+
+```javascript
+import config from 'app-config';
+
+// Access configuration values
+console.log(config.mongoUri);
+console.log(config.isDev);
+
+// Initialize plugin configs
+await config.init();
+```
+
+## Configuration properties
+
+### Core settings
+
+<ParamField path="env" type="string" default="development">
+  Current application environment. Set via `APP_ENV` environment variable.
+</ParamField>
+
+<ParamField path="port" type="number" default="3001">
+  Server port. Set via `PORT` environment variable.
+</ParamField>
+
+<ParamField path="domain" type="string">
+  Application domain. Defaults to production URL in production, otherwise uses `DOMAIN` env var.
+</ParamField>
+
+<ParamField path="isDev" type="boolean">
+  Helper flag indicating if environment is development (`env === "development"`).
+</ParamField>
+
+### Database configuration
+
+<ParamField path="mongoUri" type="string" required>
+  MongoDB connection string. Set via `MONGODB_URI` environment variable.
+</ParamField>
+
+<ParamField path="redis.url" type="string">
+  Redis connection URL. Set via `REDIS_URI` environment variable.
+</ParamField>
+
+### Email configuration
+
+<ParamField path="smtp.host" type="string">
+  SMTP server hostname. Set via `SMTP_SERVER` environment variable.
+</ParamField>
+
+<ParamField path="smtp.port" type="number">
+  SMTP server port. Set via `SMTP_PORT` environment variable.
+</ParamField>
+
+<ParamField path="smtp.secure" type="boolean" default="true">
+  Use secure connection (TLS).
+</ParamField>
+
+<ParamField path="smtp.auth.user" type="string">
+  SMTP authentication username. Set via `SMTP_USER` environment variable.
+</ParamField>
+
+<ParamField path="smtp.auth.pass" type="string">
+  SMTP authentication password. Set via `SMTP_KEY` environment variable.
+</ParamField>
+
+## Methods
+
+### init()
+
+Asynchronously initializes the configuration by loading plugin-specific config from `HIVE_SRC/app-config/app.js` if it exists.
+
+```javascript
+await config.init();
+```
+
+<Note>
+This method extends the config object with your app-specific configuration using Lodash's `extend()` method.
+</Note>
+
+### assert(configKey)
+
+Validates that a required configuration key exists. Throws an error if the key is missing or falsy.
+
+<ParamField path="configKey" type="string" required>
+  The configuration key to validate.
+</ParamField>
+
+```javascript
+// Ensure critical config is present
+config.assert('mongoUri');
+config.assert('myApiKey');
+
+// Throws: Error: Config [mongoUri] is missing
+```
+
+<Warning>
+Use `assert()` during application startup to fail fast if required configuration is missing.
+</Warning>
+
+## Environment file loading
+
+The config system loads environment variables from multiple locations in this order:
+
+1. Framework-level `.env` files in `app-config/`
+2. App-level `.env` files in `HIVE_SRC/app-config/` (if `HIVE_SRC` is set)
+
+```bash
+# Framework .env
+/.hive/src/app-config/.env
+/.hive/src/app-config/.env.app
+
+# Your app .env (loaded second, overrides framework)
+/src/app-config/.env
+/src/app-config/.env.app
+```
+
+## Custom configuration
+
+Create your own configuration in `src/app-config/app.js`:
+
+<CodeGroup>
+```javascript src/app-config/app.js
+export default {
+  myApiKey: process.env.MY_API_KEY,
+  featureFlags: {
+    enableNewFeature: process.env.ENABLE_NEW_FEATURE === 'true',
+  },
+  stripe: {
+    publicKey: process.env.STRIPE_PUBLIC_KEY,
+    secretKey: process.env.STRIPE_SECRET_KEY,
+  },
+};
+```
+
+```javascript Usage
+import config from 'app-config';
+
+// Initialize to load your custom config
+await config.init();
+
+// Access custom configuration
+console.log(config.myApiKey);
+console.log(config.featureFlags.enableNewFeature);
+
+// Validate required keys
+config.assert('myApiKey');
+```
+</CodeGroup>
+
+## Environment validation
+
+Use the `assertEnv` helper to validate required environment variables:
+
+```javascript
+import assertEnv from 'app-config/assertEnv';
+
+// Validate required env vars on startup
+assertEnv(['MONGODB_URI', 'REDIS_URI', 'MY_API_KEY']);
+
+// Throws: Error: Missing env variables: MY_API_KEY
+```
+
+<Tip>
+Combine `assertEnv()` for environment variables and `config.assert()` for config keys to ensure your app has all required settings.
+</Tip>
+
+## Best practices
+
+### Validate critical config on startup
+
+```javascript
+import config from 'app-config';
+import assertEnv from 'app-config/assertEnv';
+
+// Validate environment variables
+assertEnv(['MONGODB_URI', 'REDIS_URI']);
+
+// Initialize and validate config
+await config.init();
+config.assert('mongoUri');
+config.assert('myApiKey');
+```
+
+### Use environment-specific settings
+
+```javascript
+export default {
+  apiUrl: config.isDev 
+    ? 'http://localhost:3000'
+    : 'https://api.production.com',
+  
+  logLevel: config.env === 'production' ? 'error' : 'debug',
+};
+```
+
+### Group related configuration
+
+```javascript
+export default {
+  stripe: {
+    publicKey: process.env.STRIPE_PUBLIC_KEY,
+    secretKey: process.env.STRIPE_SECRET_KEY,
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+  },
+  
+  aws: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    region: process.env.AWS_REGION || 'us-east-1',
+  },
+};
+```

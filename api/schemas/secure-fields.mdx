@@ -1,0 +1,350 @@
+---
+title: Secure fields
+description: Automatically hide sensitive data like passwords and tokens from API responses
+---
+
+Secure fields are automatically excluded from database query results to prevent sensitive data from leaking into API responses.
+
+## How it works
+
+When you define a schema, you can export a `secureFields` array alongside the schema. These fields are automatically stripped from responses:
+
+```javascript users.schema.js
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const users = dbSchema.extend({
+  email: z.string().email(),
+  fullName: z.string(),
+  password: z.string(),  // Sensitive!
+});
+
+export const secureFields = ['password'];
+
+export default users;
+```
+
+## Service configuration
+
+Secure fields are configured when the database service is created:
+
+```javascript db.js
+const { default: schema, secureFields = [] } = (await import(schemaFile));
+
+db.services[schemaName] = db.createService(`${resourceName}`, {
+  validate: (obj) => {
+    return { value: schema.parse(obj) };
+  },
+  secureFields: secureFields,
+});
+```
+
+<Note>
+If no `secureFields` are exported from a schema, it defaults to an empty array. This means all fields are returned in responses.
+</Note>
+
+## Default secure fields
+
+The MongoService includes a default secure field called `verySecureField`:
+
+```javascript mongo-service.js
+const defaultOptions = {
+  addCreatedOnField: true,
+  addUpdatedOnField: true,
+  useStringId: true,
+  validate: undefined,
+  emitter: undefined,
+  secureFields: ['verySecureField'],
+};
+```
+
+This is overridden by schema-specific secure fields when provided.
+
+## Automatic filtering
+
+Secure fields are filtered in three database operations:
+
+### 1. Find operations
+
+```javascript mongo-query-service.js
+async find(query = {}, opt = { perPage: 100, page: 0 }) {
+  // ... query logic ...
+  
+  return {
+    pagesCount,
+    results: results.map(doc => {
+      return _.omit(doc, opt.isIncludeSecureFields ? [] : this._options.secureFields || []);
+    }),
+    count,
+  };
+}
+```
+
+### 2. FindOne operations
+
+```javascript mongo-query-service.js
+async findOne(query = {}, options = {}) {
+  const { results } = await this.find(query, { limit: 2, ...options });
+  let result = results[0] || null;
+
+  if (result && !options.isIncludeSecureFields) {
+    result = _.omit(result, this._options.secureFields || []);
+  }
+  
+  return result;
+}
+```
+
+### 3. Create operations
+
+```javascript mongo-service.js
+async create(objs, options = {}) {
+  // ... creation logic ...
+  
+  created = created.map(doc => {
+    return _.omit(doc, options.isIncludeSecureFields ? [] : this._options.secureFields);
+  })
+
+  return created.length > 1 ? created : created[0];
+}
+```
+
+### 4. Update operations
+
+```javascript mongo-service.js
+async updateOne(query, updateFn, options = {}) {
+  // ... update logic ...
+  
+  updated = _.omit(updated, options.isIncludeSecureFields ? [] : this._options.secureFields);
+
+  return updated;
+}
+```
+
+<Warning>
+Secure fields are only filtered in the **response**. They are still stored in the database and accessible internally.
+</Warning>
+
+## Including secure fields
+
+Sometimes you need access to secure fields internally (e.g., to verify passwords). Use the `isIncludeSecureFields` option:
+
+```javascript
+const user = await db.services.users.findOne(
+  { email: 'user@example.com' },
+  { isIncludeSecureFields: true }
+);
+
+// user.password is now accessible
+const isValid = await compareTextWithHash(inputPassword, user.password);
+```
+
+### Internal usage example
+
+The framework uses this when updating documents:
+
+```javascript mongo-service.js
+async updateOne(query, updateFn, options = {}) {
+  // Fetch WITH secure fields for internal processing
+  const findOptions = { isIncludeSecureFields: true };
+  if (options.session) findOptions.session = options.session;
+  const doc = await this.findOne(query, findOptions);
+  
+  // ... perform update ...
+  
+  // Strip secure fields from response
+  updated = _.omit(updated, options.isIncludeSecureFields ? [] : this._options.secureFields);
+  return updated;
+}
+```
+
+<Tip>
+Always use `isIncludeSecureFields: true` when you need to access secure fields internally. Never expose these fields in API responses.
+</Tip>
+
+## Common secure fields
+
+Here are common fields you should mark as secure:
+
+### Passwords
+
+```javascript
+const users = dbSchema.extend({
+  email: z.string().email(),
+  password: z.string(),
+});
+
+export const secureFields = ['password'];
+```
+
+### Authentication tokens
+
+```javascript
+const tokens = dbSchema.extend({
+  user: z.object({ _id: z.string() }),
+  token: z.string(),
+  otp: z.string().nullable().optional(),
+});
+
+export const secureFields = ['token', 'otp'];
+```
+
+### API keys and secrets
+
+```javascript
+const integrations = dbSchema.extend({
+  name: z.string(),
+  apiKey: z.string(),
+  apiSecret: z.string(),
+});
+
+export const secureFields = ['apiKey', 'apiSecret'];
+```
+
+### Personal identification
+
+```javascript
+const users = dbSchema.extend({
+  email: z.string().email(),
+  ssn: z.string().optional(),
+  creditCard: z.string().optional(),
+});
+
+export const secureFields = ['ssn', 'creditCard'];
+```
+
+## Nested secure fields
+
+You can use dot notation to hide nested fields:
+
+```javascript
+const users = dbSchema.extend({
+  email: z.string().email(),
+  oauth: z.object({
+    google: z.object({
+      accessToken: z.string(),
+      refreshToken: z.string(),
+    }),
+  }).optional(),
+});
+
+export const secureFields = [
+  'oauth.google.accessToken',
+  'oauth.google.refreshToken',
+];
+```
+
+Lodash's `_.omit()` handles nested paths automatically.
+
+## Security best practices
+
+<Steps>
+  <Step title="Always hash passwords">
+    Use `getHash()` from `security.util.js` to hash passwords before storing:
+    
+    ```javascript
+    import { getHash } from 'security.util';
+    
+    const hashedPassword = await getHash(plainPassword);
+    ```
+  </Step>
+  
+  <Step title="Mark all sensitive fields as secure">
+    Include passwords, tokens, API keys, and any PII in the `secureFields` array.
+  </Step>
+  
+  <Step title="Only include secure fields when necessary">
+    Use `isIncludeSecureFields: true` sparingly and only for internal operations.
+  </Step>
+  
+  <Step title="Never log secure fields">
+    Avoid logging objects that might contain secure fields. If you must log, explicitly omit them first.
+  </Step>
+</Steps>
+
+## Hashing utilities
+
+Hive provides utilities for working with sensitive data:
+
+```javascript security.util.js
+import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
+import util from 'util';
+
+const randomBytes = util.promisify(crypto.randomBytes, crypto);
+const bcryptHash = util.promisify(bcrypt.hash, bcrypt);
+const compare = util.promisify(bcrypt.compare, bcrypt);
+
+/**
+ * Generates random string, useful for creating secure tokens
+ */
+export const generateSecureToken = async (tokenLength = 48) => {
+  const buf = await randomBytes(tokenLength);
+  return buf.toString("hex");
+};
+
+/**
+ * Generate hash from any string. Could be used to generate a hash from password
+ */
+export const getHash = (text) => {
+  return bcryptHash(text, 10);
+};
+
+/**
+ * Compares if text and hash are equal
+ */
+export const compareTextWithHash = (text, hash) => {
+  return compare(text, hash);
+};
+```
+
+### Usage example
+
+```javascript
+import { getHash, compareTextWithHash } from 'security.util';
+
+// Hash password on signup
+const user = await db.services.users.create({
+  email: 'user@example.com',
+  fullName: 'John Doe',
+  password: await getHash(plainPassword),
+});
+
+// Verify password on login
+const user = await db.services.users.findOne(
+  { email: 'user@example.com' },
+  { isIncludeSecureFields: true }
+);
+
+const isValid = await compareTextWithHash(inputPassword, user.password);
+```
+
+## Event emissions and secure fields
+
+When documents are created, updated, or removed, events are emitted. These events include the **full document** with secure fields:
+
+```javascript mongo-service.js
+this._bus.emit(`${this._collection.name}:created`, {
+  doc,  // Contains ALL fields including secure ones
+});
+
+this._bus.emit(`${this._collection.name}:updated`, {
+  doc: updated,      // Contains ALL fields
+  prevDoc: doc,      // Contains ALL fields
+});
+```
+
+<Warning>
+If you listen to these events, be careful not to expose secure fields in logs or external systems.
+</Warning>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Database schema" icon="database" href="/api/schemas/db-schema">
+    Learn about the base schema and automatic fields
+  </Card>
+  <Card title="Validation" icon="check" href="/api/schemas/validation">
+    Understand how schema validation works
+  </Card>
+</CardGroup>

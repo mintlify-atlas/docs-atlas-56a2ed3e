@@ -1,0 +1,323 @@
+---
+title: hive deploy
+description: Build and deploy your Hive application for production environments
+---
+
+The `hive deploy` command creates a production-ready build of your Hive application by merging your source code with the framework, installing dependencies, and running deployment scripts.
+
+## Usage
+
+```bash
+hive deploy
+```
+
+<Note>
+This command must be run from your project root directory (where `package.json` lives).
+</Note>
+
+## How it works
+
+The deployment process follows these steps:
+
+1. **Merge directories** - Combines framework files (from `starter/`) with your source code into `./dist`
+2. **Copy configuration** - Includes all necessary config files except `package.json`
+3. **Install dependencies** - Runs `npm install` in the deployment script directory
+4. **Execute deployment script** - Runs the deployment automation at `./dist/deploy/script/src/index.js`
+
+<Warning>
+This command creates a `./dist` directory in your project. Make sure to add it to `.gitignore` if it's not already there.
+</Warning>
+
+## Output structure
+
+After running `hive deploy`, your project contains:
+
+```
+my-project/
+├── src/                       # Your original source
+├── dist/                      # Generated build output
+│   ├── src/                   # Merged application code
+│   │   ├── resources/         # Framework + your resources
+│   │   ├── middlewares/       # Framework + your middleware
+│   │   ├── services/          # Your services
+│   │   ├── app.js            # Server bootstrap
+│   │   └── db.js             # Database layer
+│   ├── deploy/
+│   │   └── script/           # Deployment automation
+│   │       ├── src/
+│   │       │   └── index.js  # Deployment script
+│   │       ├── package.json
+│   │       └── node_modules/
+│   ├── .env                  # Environment config (copied)
+│   └── package.json          # Project dependencies
+└── node_modules/
+```
+
+## Examples
+
+### Basic deployment
+
+```bash
+hive deploy
+```
+
+Output:
+```bash
+sourceDir1 /path/to/hive/starter
+copy /starter/src/app.js ./dist/src/app.js
+copy /starter/src/db.js ./dist/src/db.js
+...
+Merged resources
+outDir /path/to/project/dist/deploy/script
+
+npm install
+...
+Deployment complete!
+```
+
+### In a deployment pipeline
+
+```yaml
+# .github/workflows/deploy.yml
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - name: Install Hive CLI
+        run: npm install -g @paralect/hive
+      
+      - name: Deploy application
+        run: hive deploy
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+          APP_SECRET: ${{ secrets.APP_SECRET }}
+```
+
+### With Docker
+
+```dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copy source
+COPY package*.json ./
+COPY src ./src
+
+# Install CLI and dependencies
+RUN npm install -g @paralect/hive
+RUN npm install
+
+# Build for deployment
+RUN hive deploy
+
+# Run from dist
+WORKDIR /app/dist
+CMD ["node", "src/app.js"]
+```
+
+<Tip>
+The `dist` directory is self-contained and can be copied to your production server without the original `src` directory.
+</Tip>
+
+## Deployment script
+
+The deployment script at `./dist/deploy/script/src/index.js` handles platform-specific deployment logic. By default, it may:
+
+- Upload files to a cloud platform
+- Configure environment variables
+- Run database migrations
+- Set up load balancers or CDN
+- Trigger serverless deployments
+
+<Note>
+The exact behavior depends on your Hive version and any custom deployment scripts you've added.
+</Note>
+
+## Environment configuration
+
+Make sure your `.env` file has production values before deploying:
+
+```bash
+# Production .env
+MONGO_URI=mongodb+srv://user:pass@cluster.mongodb.net/production
+PORT=8080
+NODE_ENV=production
+APP_SECRET=your-production-secret-key
+```
+
+<Warning>
+**Never commit `.env` to version control.** Use environment variables in your deployment platform:
+
+- **Heroku**: `heroku config:set MONGO_URI=...`
+- **AWS**: Use Parameter Store or Secrets Manager
+- **Vercel**: Set environment variables in dashboard
+- **Docker**: Pass via `docker run -e` or compose files
+</Warning>
+
+## Deployment targets
+
+<CodeGroup>
+```bash Traditional server
+# On your production server
+scp -r dist user@server:/var/www/my-app
+ssh user@server
+cd /var/www/my-app
+node src/app.js
+```
+
+```bash Docker
+# Build image with dist
+docker build -t my-hive-app .
+docker run -p 80:3001 \
+  -e MONGO_URI=$MONGO_URI \
+  -e APP_SECRET=$APP_SECRET \
+  my-hive-app
+```
+
+```bash PM2
+# Deploy with process manager
+hive deploy
+cd dist
+pm2 start src/app.js --name "my-app"
+pm2 save
+```
+
+```bash Serverless
+# Deploy to AWS Lambda (example)
+hive deploy
+cd dist
+zip -r ../lambda.zip .
+aws lambda update-function-code \
+  --function-name my-hive-app \
+  --zip-file fileb://../lambda.zip
+```
+</CodeGroup>
+
+## Optimizations
+
+### Exclude unnecessary files
+
+The merge process automatically ignores:
+- `node_modules/` (except `@paralect/hive`)
+- `dist/`
+- `.git/`
+
+You can verify what's excluded in `/home/daytona/workspace/source/cli/helpers/mergeDirs.js:5`
+
+### Minimize bundle size
+
+```bash
+# Remove dev dependencies before deploy
+npm prune --production
+
+# Then deploy
+hive deploy
+
+# Reinstall dev deps for local work
+npm install
+```
+
+### Database migrations
+
+Run migrations as part of your deployment:
+
+```javascript
+// dist/deploy/script/src/index.js
+const mongoose = require('mongoose');
+
+async function deploy() {
+  await mongoose.connect(process.env.MONGO_URI);
+  
+  // Run migrations
+  await migrateUsers();
+  await addIndexes();
+  
+  console.log('Deployment complete!');
+}
+
+deploy();
+```
+
+## Troubleshooting
+
+### Deployment fails
+
+**Missing dependencies in dist/deploy/script**
+```bash
+# The deploy script has its own package.json
+cd dist/deploy/script
+npm install
+node src/index.js
+```
+
+**Permission errors**
+```bash
+# Ensure write permissions
+chmod +w dist/
+
+# Or remove and rebuild
+rm -rf dist
+hive deploy
+```
+
+### Application won't start after deploy
+
+**Environment variables missing**
+```bash
+# Check your .env was copied
+cat dist/.env
+
+# Or set them explicitly
+MONGO_URI=... PORT=... node dist/src/app.js
+```
+
+**MongoDB connection fails**
+```bash
+# Test connection from dist
+cd dist
+node -e "require('mongoose').connect(process.env.MONGO_URI).then(() => console.log('OK'))"
+```
+
+### Stale build artifacts
+
+Always clean before deploying:
+
+```bash
+# Remove old build
+rm -rf dist
+
+# Fresh deploy
+hive deploy
+```
+
+<Tip>
+Add a `predeploy` script to your `package.json` to automatically clean builds:
+
+```json
+{
+  "scripts": {
+    "predeploy": "rm -rf dist",
+    "deploy": "hive deploy"
+  }
+}
+```
+</Tip>
+
+## See also
+
+- [hive run](/api/cli/run) - Run the development server
+- [hive prepare](/api/cli/prepare) - Prepare without deploying

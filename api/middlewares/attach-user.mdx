@@ -1,0 +1,402 @@
+---
+title: attachUser
+description: Attach authenticated user to request context
+---
+
+The `attachUser` middleware extracts authentication tokens from the request and loads the corresponding user from the database. Unlike `isAuthorized`, it doesn't return an error if no user is found.
+
+## Usage
+
+```javascript
+import attachUser from 'middlewares/attachUser';
+import { z } from 'zod';
+
+export const middlewares = [attachUser];
+
+export const handler = async (ctx) => {
+  if (ctx.state.user) {
+    ctx.body = { message: `Welcome back, ${ctx.state.user.name}` };
+  } else {
+    ctx.body = { message: 'Welcome, guest' };
+  }
+};
+
+export const requestSchema = z.object({});
+
+export const endpoint = {
+  method: "GET",
+  url: "/",
+};
+```
+
+## How it works
+
+`attachUser` performs the following steps:
+
+1. Extracts the access token from cookies, headers, or custom header
+2. Looks up the token in the `tokens` collection
+3. If found, loads the user from the `users` collection
+4. Attaches user to `ctx.state.user`
+5. Attaches token metadata to `ctx.state.user.authMetadata`
+6. Continues to next middleware (even if no user found)
+
+<Note>
+  `attachUser` is used internally by `isAuthorized`. Use `attachUser` directly when you want optional authentication.
+</Note>
+
+## Token extraction
+
+The middleware looks for tokens in this order:
+
+1. **Cookie**: `access_token` cookie
+2. **Authorization header**: `Authorization: Bearer <token>`
+3. **Custom header**: Configured via `config._hive.authHeaderName`
+
+<CodeGroup>
+```bash Cookie
+curl -X GET https://api.example.com/feed \
+  -H "Cookie: access_token=eyJhbGc..."
+```
+
+```bash Authorization Header
+curl -X GET https://api.example.com/feed \
+  -H "Authorization: Bearer eyJhbGc..."
+```
+
+```bash Custom Header
+# With config._hive.authHeaderName = 'x-api-token'
+curl -X GET https://api.example.com/feed \
+  -H "x-api-token: eyJhbGc..."
+```
+</CodeGroup>
+
+## Custom authentication header
+
+Configure a custom header name in your app config:
+
+```javascript /src/app-config/app.js
+export default {
+  _hive: {
+    authHeaderName: 'x-api-token'
+  }
+};
+```
+
+Now `attachUser` will check `ctx.headers['x-api-token']` in addition to cookies and `Authorization` header.
+
+## Context state
+
+### Input
+
+<ParamField path="ctx.cookies.get('access_token')" type="string">
+  Authentication token from cookie
+</ParamField>
+
+<ParamField path="ctx.headers.authorization" type="string">
+  Bearer token from Authorization header
+</ParamField>
+
+<ParamField path="ctx.headers[config._hive.authHeaderName]" type="string">
+  Token from custom header (if configured)
+</ParamField>
+
+### Output
+
+<ParamField path="ctx.state.accessToken" type="string">
+  The extracted authentication token (if found)
+</ParamField>
+
+<ParamField path="ctx.state.user" type="object | undefined">
+  The authenticated user object (if token is valid)
+</ParamField>
+
+<ParamField path="ctx.state.user.authMetadata" type="object">
+  Optional metadata from the token (if token has metadata)
+</ParamField>
+
+## Implementation
+
+```javascript /starter/src/middlewares/attachUser.js
+import db from 'db';
+import config from 'app-config';
+
+const userService = db.services.users;
+const tokenService = db.services.tokens;
+
+const storeTokenToState = async (ctx) => {
+  let accessToken = ctx.cookies.get('access_token');
+
+  const { authorization } = ctx.headers;
+
+  if (!accessToken && authorization) {
+    accessToken = authorization.replace('Bearer', '').trim();
+  }
+
+  if (!accessToken && config._hive.authHeaderName && ctx.headers[config._hive.authHeaderName]) {
+    accessToken = ctx.headers[config._hive.authHeaderName];
+  }
+
+  ctx.state.accessToken = accessToken;
+};
+
+export default async (ctx, next) => {
+  storeTokenToState(ctx);
+
+  let token;
+
+  if (ctx.state.accessToken) {
+    token = await tokenService.findOne({ token: ctx.state.accessToken });
+  }
+
+  if (token) {
+    ctx.state.user = await userService.findOne({ _id: token.user._id });
+
+    if (token.metadata) {
+      ctx.state.user.authMetadata = token.metadata;
+    }
+  }
+
+  await next();
+};
+```
+
+## Examples
+
+### Optional authentication
+
+Show different content based on authentication:
+
+```javascript /src/resources/posts/endpoints/list.js
+import attachUser from 'middlewares/attachUser';
+import db from 'db';
+import { z } from 'zod';
+
+const postService = db.services.posts;
+
+export const middlewares = [attachUser];
+
+export const handler = async (ctx) => {
+  const query = { published: true };
+
+  // If user is logged in, also show their drafts
+  if (ctx.state.user) {
+    query.$or = [
+      { published: true },
+      { authorId: ctx.state.user._id, published: false }
+    ];
+  }
+
+  const posts = await postService.find(query);
+
+  ctx.body = { posts };
+};
+
+export const requestSchema = z.object({});
+
+export const endpoint = {
+  method: "GET",
+  url: "/",
+};
+```
+
+### Personalized public page
+
+```javascript /src/resources/home/endpoints/get.js
+import attachUser from 'middlewares/attachUser';
+import allowNoAuth from 'middlewares/allowNoAuth';
+import db from 'db';
+
+const postService = db.services.posts;
+
+export const middlewares = [allowNoAuth, attachUser];
+
+export const handler = async (ctx) => {
+  let recommendations;
+
+  if (ctx.state.user) {
+    // Personalized feed for logged-in users
+    recommendations = await getRecommendations(ctx.state.user);
+  } else {
+    // Generic feed for guests
+    recommendations = await postService.find(
+      { featured: true },
+      { limit: 10 }
+    );
+  }
+
+  ctx.body = {
+    user: ctx.state.user || null,
+    recommendations
+  };
+};
+```
+
+### Using authentication metadata
+
+Tokens can store custom metadata:
+
+```javascript /src/resources/sessions/endpoints/info.js
+import attachUser from 'middlewares/attachUser';
+import { z } from 'zod';
+
+export const middlewares = [attachUser];
+
+export const handler = async (ctx) => {
+  if (!ctx.state.user) {
+    ctx.body = { authenticated: false };
+    return;
+  }
+
+  ctx.body = {
+    authenticated: true,
+    user: ctx.state.user,
+    session: {
+      device: ctx.state.user.authMetadata?.device,
+      ip: ctx.state.user.authMetadata?.ip,
+      createdAt: ctx.state.user.authMetadata?.createdAt
+    }
+  };
+};
+
+export const requestSchema = z.object({});
+
+export const endpoint = {
+  method: "GET",
+  url: "/",
+};
+```
+
+### Creating tokens with metadata
+
+```javascript /src/resources/auth/endpoints/login.js
+import allowNoAuth from 'middlewares/allowNoAuth';
+import db from 'db';
+import { z } from 'zod';
+
+const userService = db.services.users;
+const tokenService = db.services.tokens;
+
+export const middlewares = [allowNoAuth];
+
+export const handler = async (ctx) => {
+  const { email, password } = ctx.validatedData;
+
+  const user = await userService.findOne({ email });
+
+  if (!user || !await user.comparePassword(password)) {
+    ctx.throw(401, { message: 'Invalid credentials' });
+  }
+
+  const token = await tokenService.create({
+    userId: user._id,
+    metadata: {
+      device: ctx.headers['user-agent'],
+      ip: ctx.ip,
+      createdAt: new Date()
+    }
+  });
+
+  ctx.cookies.set('access_token', token.value);
+
+  ctx.body = { user, token: token.value };
+};
+
+export const requestSchema = z.object({
+  email: z.string().email(),
+  password: z.string(),
+});
+
+export const endpoint = {
+  method: "POST",
+  url: "/login",
+};
+```
+
+## Difference from isAuthorized
+
+| Feature | attachUser | isAuthorized |
+|---------|-----------|-------------|
+| **Returns error if no user** | No | Yes (401) |
+| **Allows unauthenticated requests** | Yes | No |
+| **Use case** | Optional auth | Required auth |
+| **Sets ctx.state.user** | If token valid | Always (or throws) |
+
+<CodeGroup>
+```javascript attachUser
+import attachUser from 'middlewares/attachUser';
+
+export const middlewares = [attachUser];
+
+export const handler = async (ctx) => {
+  // ctx.state.user might be undefined
+  if (ctx.state.user) {
+    // Do something for authenticated users
+  } else {
+    // Do something for guests
+  }
+};
+```
+
+```javascript isAuthorized
+import isAuthorized from 'middlewares/isAuthorized';
+
+export const middlewares = [isAuthorized];
+
+export const handler = async (ctx) => {
+  // ctx.state.user is guaranteed to exist
+  ctx.body = ctx.state.user;
+};
+```
+</CodeGroup>
+
+## Global usage
+
+`attachUser` is typically used as a global middleware via `tryToAttachUser`:
+
+```javascript /starter/src/middlewares/global/tryToAttachUser.js
+import db from 'db';
+
+const userService = db.services.users;
+const tokenService = db.services.tokens;
+
+const storeTokenToState = async (ctx) => {
+  let accessToken = ctx.cookies.get("access_token");
+
+  const { authorization } = ctx.headers;
+
+  if (!accessToken && authorization) {
+    accessToken = authorization.replace("Bearer", "").trim();
+  }
+
+  ctx.state.accessToken = accessToken;
+};
+
+const tryToAttachUser = async (ctx, next) => {
+  storeTokenToState(ctx);
+  // User loading commented out by default
+  // Uncomment to attach user globally
+  return next();
+};
+
+export default tryToAttachUser;
+```
+
+<Tip>
+  Uncomment the user loading logic in `tryToAttachUser.js` to automatically attach users to all requests.
+</Tip>
+
+## Related middlewares
+
+<CardGroup cols={2}>
+  <Card title="isAuthorized" icon="lock" href="/api/middlewares/is-authorized">
+    Require authentication (uses attachUser internally)
+  </Card>
+  <Card title="allowNoAuth" icon="lock-open" href="/api/middlewares/allow-no-auth">
+    Skip authentication checks
+  </Card>
+</CardGroup>
+
+## See also
+
+- [Middleware system](/api/middlewares/overview)
+- [Authentication guide](/guides/authentication)

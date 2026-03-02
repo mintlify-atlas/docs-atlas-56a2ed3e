@@ -1,0 +1,152 @@
+---
+title: Database schema
+description: Base schema for all database collections with automatic ID generation and timestamps
+---
+
+Every database schema in Hive extends the base `dbSchema`, which provides automatic ID generation and timestamp management.
+
+## Base schema
+
+The `dbSchema` is located at `helpers/schema/db.schema.js` and provides three essential fields:
+
+<ParamField path="_id" type="string" required>
+  Unique identifier for the document. Automatically generated as a hex string if not provided.
+</ParamField>
+
+<ParamField path="createdOn" type="date" required>
+  Timestamp of when the document was created. Automatically set to current date on creation.
+  
+  Uses `z.coerce.date()` to ensure the value is always a valid Date object.
+</ParamField>
+
+<ParamField path="updatedOn" type="date" required>
+  Timestamp of when the document was last updated. Automatically updated on each modification.
+  
+  Uses `z.coerce.date()` to ensure the value is always a valid Date object.
+</ParamField>
+
+## Source code
+
+```javascript helpers/schema/db.schema.js
+import { z } from 'zod';
+
+export default z
+  .object({
+    _id: z.string(),
+
+    createdOn: z.coerce.date().default(() => new Date()),
+    updatedOn: z.coerce.date().default(() => new Date()),
+  });
+```
+
+## Extending the base schema
+
+All resource schemas extend `dbSchema` using Zod's `.extend()` method:
+
+<CodeGroup>
+
+```javascript users.schema.js
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const users = dbSchema.extend({
+  email: z.string().email(),
+  fullName: z.string(),
+  avatarUrl: z.string().url().optional(),
+  password: z.string(),
+  
+  oauth: z.object({
+    google: z.object({}),
+  }).optional(),
+});
+
+export default users;
+```
+
+```javascript tokens.schema.js
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+export default dbSchema.extend({
+  user: z.object({
+    _id: z.string(),
+  }),
+  token: z.string(),
+  otp: z.string().nullable().optional(),
+  metadata: z.object({}).optional()
+});
+```
+
+```javascript migrations.schema.js
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+export default dbSchema.extend({
+  version: z.number(),
+});
+```
+
+</CodeGroup>
+
+## Automatic field management
+
+When you create or update documents using Hive's database services, these fields are managed automatically:
+
+### On creation
+
+```javascript
+// Framework automatically adds:
+- _id: Generated hex string (if not provided)
+- createdOn: Current timestamp
+```
+
+### On update
+
+```javascript
+// Framework automatically updates:
+- updatedOn: Current timestamp
+```
+
+<Note>
+You don't need to manually set `_id`, `createdOn`, or `updatedOn`. The framework handles these fields automatically through the MongoService layer.
+</Note>
+
+## Configuration options
+
+The MongoService that powers schema validation includes these options for base schema fields:
+
+```javascript
+const defaultOptions = {
+  addCreatedOnField: true,  // Automatically add createdOn timestamp
+  addUpdatedOnField: true,  // Automatically update updatedOn timestamp
+  useStringId: true,        // Use string IDs instead of ObjectId
+  validate: undefined,      // Zod schema validation function
+  secureFields: [],         // Fields to hide in responses
+};
+```
+
+<Tip>
+If you need to disable automatic timestamps for a specific service, you can override these options when creating the service. However, this is rarely needed.
+</Tip>
+
+## ISO string storage
+
+Timestamps are stored as ISO 8601 strings in MongoDB:
+
+```javascript
+entity.createdOn = new Date().toISOString();
+entity.updatedOn = new Date().toISOString();
+```
+
+Zod's `z.coerce.date()` automatically converts these strings back to Date objects when parsing.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Validation" icon="check" href="/api/schemas/validation">
+    Learn how Zod validation works with schemas
+  </Card>
+  <Card title="Secure fields" icon="lock" href="/api/schemas/secure-fields">
+    Hide sensitive data from API responses
+  </Card>
+</CardGroup>

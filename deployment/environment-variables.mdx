@@ -1,0 +1,602 @@
+---
+title: Environment variables
+description: Complete reference of all environment variables used by the Hive framework for configuration and deployment
+---
+
+Hive uses environment variables for configuration across different environments. The framework automatically loads variables from `.env` files in your application's `app-config/` directory.
+
+## Configuration loading
+
+Hive loads environment variables in the following order:
+
+<Steps>
+  <Step title="Framework defaults">
+    Base configuration from `.hive/src/app-config/.env` (if exists)
+  </Step>
+  
+  <Step title="Application base config">
+    Your application's `src/app-config/.env` file loaded via `HIVE_SRC` path
+  </Step>
+  
+  <Step title="Application overrides">
+    Your application's `src/app-config/.env.app` for app-specific settings
+  </Step>
+  
+  <Step title="Runtime environment">
+    Variables set at runtime (highest priority)
+  </Step>
+</Steps>
+
+From `src/app-config/index.js:11-19`:
+
+```javascript
+if (process.env.HIVE_SRC) {
+  dotenv.config({
+    path: `${process.env.HIVE_SRC}/app-config/.env`,
+  });
+
+  dotenv.config({
+    path: `${process.env.HIVE_SRC}/app-config/.env.app`,
+  });
+}
+```
+
+## Core framework variables
+
+### HIVE_SRC
+
+<ParamField path="HIVE_SRC" type="string" required>
+  Absolute path to your application's source directory. This is automatically set by the Hive CLI when you run `hive run ./src`.
+</ParamField>
+
+The framework uses this to load your resources, endpoints, handlers, and configuration:
+
+```javascript
+// From src/app.js:5-6
+if (process.env.HIVE_SRC) {
+  appModulePath.addPath(process.env.HIVE_SRC);
+}
+```
+
+**Example:**
+```bash
+export HIVE_SRC=/home/user/my-app/src
+```
+
+<Note>
+You typically don't set this manually. The Hive CLI sets it automatically when running `hive run ./src`.
+</Note>
+
+### NODE_ENV
+
+<ParamField path="NODE_ENV" type="string" default="development">
+  Node.js environment mode. Controls framework behaviors like error verbosity and optimization.
+</ParamField>
+
+**Accepted values:**
+- `development` — Development mode with verbose logging
+- `production` — Production mode with optimizations
+- `test` — Testing mode
+
+**Example:**
+```bash
+NODE_ENV=production
+```
+
+Used in `src/app.js:59`:
+```javascript
+console.log(`Api server listening on ${config.port}, in ${process.env.NODE_ENV} mode and ${process.env.APP_ENV} environment`);
+```
+
+### APP_ENV
+
+<ParamField path="APP_ENV" type="string" default="development">
+  Application environment. Controls application-level configurations and behaviors.
+</ParamField>
+
+**Accepted values:**
+- `development` — Local development
+- `staging` — Staging environment
+- `production` — Production environment
+
+**Example:**
+```bash
+APP_ENV=production
+```
+
+From `src/app-config/index.js:21`:
+```javascript
+const env = process.env.APP_ENV || "development";
+```
+
+This affects error handling in `src/routes/middlewares/routeErrorHandler.js:16`:
+```javascript
+if (serverError && (error.status === 500 || !error.status) && process.env.APP_ENV === "production") {
+  // Hide detailed errors in production
+}
+```
+
+<Warning>
+In production (`APP_ENV=production`), detailed error messages are hidden from API responses for security. Set this correctly for each environment.
+</Warning>
+
+## Server configuration
+
+### PORT
+
+<ParamField path="PORT" type="number" default="3001">
+  Port number for the HTTP server to listen on.
+</ParamField>
+
+**Example:**
+```bash
+PORT=8080
+```
+
+From `src/app-config/index.js:37`:
+```javascript
+port: process.env.PORT || 3001,
+```
+
+### DOMAIN
+
+<ParamField path="DOMAIN" type="string">
+  Application domain URL. Used for generating links, CORS configuration, and redirects.
+</ParamField>
+
+**Example:**
+```bash
+DOMAIN=https://api.myapp.com
+```
+
+From `src/app-config/index.js:38-39`:
+```javascript
+domain: env === "production" ? "https://api.yourapp.com" : process.env.DOMAIN || "",
+```
+
+<Tip>
+In production, the domain defaults to `https://api.yourapp.com`. Override this with your actual production domain.
+</Tip>
+
+## Database configuration
+
+### MONGODB_URI
+
+<ParamField path="MONGODB_URI" type="string" required>
+  MongoDB connection string. Must include database name.
+</ParamField>
+
+**Example:**
+```bash
+MONGODB_URI=mongodb://localhost:27017/myapp
+```
+
+**With authentication:**
+```bash
+MONGODB_URI=mongodb://username:password@mongo.example.com:27017/myapp?authSource=admin
+```
+
+**MongoDB Atlas:**
+```bash
+MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/myapp?retryWrites=true&w=majority
+```
+
+From `src/app-config/index.js:41`:
+```javascript
+mongoUri: process.env.MONGODB_URI,
+```
+
+<Warning>
+The application will fail to start if `MONGODB_URI` is not set. Ensure this is configured before running.
+</Warning>
+
+## Cache and messaging
+
+### REDIS_URI
+
+<ParamField path="REDIS_URI" type="string" required>
+  Redis connection string. Used for caching, pub/sub, Socket.io adapter, and BullMQ queues.
+</ParamField>
+
+**Example:**
+```bash
+REDIS_URI=redis://localhost:6379
+```
+
+**With authentication:**
+```bash
+REDIS_URI=redis://:password@redis.example.com:6379
+```
+
+**Redis Cloud:**
+```bash
+REDIS_URI=redis://username:password@redis-12345.cloud.redislabs.com:12345
+```
+
+From `src/app-config/index.js:42-44`:
+```javascript
+redis: {
+  url: process.env.REDIS_URI,
+},
+```
+
+<Note>
+Redis is required for Socket.io real-time features and the BullMQ job queue system. The application may fail to start without it.
+</Note>
+
+## Email configuration
+
+Hive supports email sending via SMTP. All email variables are optional unless you're using email features.
+
+### SMTP_SERVER
+
+<ParamField path="SMTP_SERVER" type="string">
+  SMTP server hostname.
+</ParamField>
+
+**Example:**
+```bash
+SMTP_SERVER=smtp.gmail.com
+```
+
+### SMTP_PORT
+
+<ParamField path="SMTP_PORT" type="number">
+  SMTP server port. Common ports: 587 (TLS), 465 (SSL), 25 (unsecured).
+</ParamField>
+
+**Example:**
+```bash
+SMTP_PORT=587
+```
+
+### SMTP_USER
+
+<ParamField path="SMTP_USER" type="string">
+  SMTP authentication username.
+</ParamField>
+
+**Example:**
+```bash
+SMTP_USER=noreply@myapp.com
+```
+
+### SMTP_KEY
+
+<ParamField path="SMTP_KEY" type="string">
+  SMTP authentication password or API key.
+</ParamField>
+
+**Example:**
+```bash
+SMTP_KEY=your-smtp-password-or-api-key
+```
+
+From `src/app-config/index.js:45-52`:
+```javascript
+smtp: {
+  host: process.env.SMTP_SERVER,
+  port: process.env.SMTP_PORT,
+  secure: true,
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_KEY,
+  },
+},
+```
+
+<Tip>
+For development, you can use services like Mailtrap or Ethereal Email to test email functionality without sending real emails.
+</Tip>
+
+## Hive Cloud (optional)
+
+### HIVE_TOKEN
+
+<ParamField path="HIVE_TOKEN" type="string">
+  Authentication token for Hive Cloud services. Used by `hive login` and `hive deploy` commands.
+</ParamField>
+
+**Example:**
+```bash
+export HIVE_TOKEN=your-token-here
+```
+
+From `cli/hive.js:148`:
+```javascript
+if (process.env.HIVE_TOKEN) {
+  const user = (await axios({
+    url: `https://hive-api-test.paralect.co/users/me`,
+    method: 'get',
+    headers: { 'Authorization': `Bearer ${process.env.HIVE_TOKEN}` }
+  })).data;
+}
+```
+
+<Note>
+This is only needed if you're using Hive Cloud deployment features via `hive deploy`.
+</Note>
+
+## Custom configuration
+
+You can add custom environment variables in `src/app-config/app.js`. The framework merges your configuration with the base config.
+
+From `src/app-config/app.js:2`:
+```javascript
+// myVar: process.env.MY_VAR
+```
+
+**Example custom configuration:**
+
+```javascript src/app-config/app.js
+export default {
+  stripe: {
+    secretKey: process.env.STRIPE_SECRET_KEY,
+    publishableKey: process.env.STRIPE_PUBLISHABLE_KEY,
+  },
+  aws: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    region: process.env.AWS_REGION || 'us-east-1',
+  },
+  maxUploadSize: process.env.MAX_UPLOAD_SIZE || '10mb',
+};
+```
+
+Access in your code:
+
+```javascript
+import config from 'app-config';
+
+const stripeKey = config.stripe.secretKey;
+```
+
+## Environment file examples
+
+### Development (.env)
+
+```bash .env
+# Server
+PORT=3001
+NODE_ENV=development
+APP_ENV=development
+DOMAIN=http://localhost:3001
+
+# Database
+MONGODB_URI=mongodb://localhost:27017/myapp-dev
+
+# Cache
+REDIS_URI=redis://localhost:6379
+
+# Email (optional for dev)
+SMTP_SERVER=smtp.mailtrap.io
+SMTP_PORT=2525
+SMTP_USER=your-mailtrap-user
+SMTP_KEY=your-mailtrap-key
+
+# Framework
+HIVE_SRC=/path/to/your/app/src
+```
+
+### Production (.env.production)
+
+```bash .env.production
+# Server
+PORT=3001
+NODE_ENV=production
+APP_ENV=production
+DOMAIN=https://api.yourapp.com
+
+# Database
+MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/myapp?retryWrites=true&w=majority
+
+# Cache
+REDIS_URI=redis://:password@your-redis-host:6379
+
+# Email
+SMTP_SERVER=smtp.sendgrid.net
+SMTP_PORT=587
+SMTP_USER=apikey
+SMTP_KEY=your-sendgrid-api-key
+
+# Framework
+HIVE_SRC=/app/src
+```
+
+### Docker Compose example
+
+```yaml docker-compose.yml
+version: '3.8'
+
+services:
+  api:
+    build: .
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - APP_ENV=development
+      - PORT=3001
+      - MONGODB_URI=mongodb://mongodb:27017/myapp
+      - REDIS_URI=redis://redis:6379
+      - HIVE_SRC=/app/src
+      - SMTP_SERVER=mailhog
+      - SMTP_PORT=1025
+    depends_on:
+      - mongodb
+      - redis
+
+  mongodb:
+    image: mongo:5.0
+    ports:
+      - "27017:27017"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  mailhog:
+    image: mailhog/mailhog
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+```
+
+## Validation and debugging
+
+### Check loaded configuration
+
+The framework logs the `HIVE_SRC` value on startup (`src/app-config/index.js:9`):
+
+```javascript
+console.log('process.env.HIVE_SRC', process.env.HIVE_SRC)
+```
+
+You'll see this in your logs when the application starts.
+
+### Validate required variables
+
+Use the `config.assert()` helper to ensure critical configuration exists:
+
+```javascript
+import config from 'app-config';
+
+// In your code
+config.assert('mongoUri');  // Throws if not set
+config.assert('stripe');     // Throws if custom config missing
+```
+
+From `src/app-config/index.js:55-59`:
+```javascript
+assert(configKey) {
+  if (!config[configKey]) {
+    throw Error(`Config [${configKey}] is missing`);
+  }
+},
+```
+
+### Debug environment loading
+
+To see which variables are loaded, add logging to your `src/app-config/app.js`:
+
+```javascript
+console.log('Environment variables:', {
+  nodeEnv: process.env.NODE_ENV,
+  appEnv: process.env.APP_ENV,
+  mongoUri: process.env.MONGODB_URI ? '✓ set' : '✗ missing',
+  redisUri: process.env.REDIS_URI ? '✓ set' : '✗ missing',
+});
+```
+
+## Security best practices
+
+<AccordionGroup>
+  <Accordion title="Never commit .env files">
+    Add `.env` to your `.gitignore`:
+    
+    ```bash .gitignore
+    .env
+    .env.local
+    .env.*.local
+    node_modules
+    .hive
+    ```
+    
+    Commit `.env.example` as a template:
+    
+    ```bash .env.example
+    PORT=3001
+    MONGODB_URI=
+    REDIS_URI=
+    SMTP_SERVER=
+    SMTP_PORT=
+    SMTP_USER=
+    SMTP_KEY=
+    ```
+  </Accordion>
+  
+  <Accordion title="Use secrets management in production">
+    For production deployments, use your platform's secret management:
+    
+    - **Kubernetes:** Use Secrets and ConfigMaps
+    - **Docker:** Use Docker secrets
+    - **Cloud platforms:** Use platform-specific secret managers (AWS Secrets Manager, GCP Secret Manager, etc.)
+    
+    Example Kubernetes secret:
+    
+    ```yaml
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: hive-secrets
+    type: Opaque
+    stringData:
+      MONGODB_URI: mongodb+srv://...
+      REDIS_URI: redis://...
+      SMTP_KEY: your-smtp-key
+    ```
+  </Accordion>
+  
+  <Accordion title="Rotate credentials regularly">
+    Regularly rotate sensitive credentials like:
+    - Database passwords
+    - Redis passwords
+    - SMTP API keys
+    - Third-party API keys
+  </Accordion>
+  
+  <Accordion title="Use different credentials per environment">
+    Never use production credentials in development or staging. Create separate accounts/databases for each environment.
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Variables not loading">
+    Check that:
+    1. `.env` files are in `src/app-config/` directory
+    2. `HIVE_SRC` is set correctly (automatically done by CLI)
+    3. Variables don't have quotes unless they're part of the value
+    4. No spaces around `=` sign
+    
+    ```bash
+    # Correct
+    PORT=3001
+    DOMAIN=https://example.com
+    
+    # Incorrect
+    PORT = 3001
+    DOMAIN = "https://example.com"
+    ```
+  </Accordion>
+  
+  <Accordion title="Application fails to start">
+    Check logs for missing required variables:
+    - `MONGODB_URI` — Required for database connection
+    - `REDIS_URI` — Required for caching and real-time features
+    - `HIVE_SRC` — Set automatically by CLI, required for framework operation
+  </Accordion>
+  
+  <Accordion title="Different values in different environments">
+    Remember the loading order:
+    1. Framework defaults (lowest priority)
+    2. `src/app-config/.env`
+    3. `src/app-config/.env.app`
+    4. Runtime environment variables (highest priority)
+    
+    Runtime variables always override file-based configuration.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Deployment overview" icon="rocket" href="/deployment/overview">
+    Learn about deployment strategies for Hive applications
+  </Card>
+  <Card title="Docker deployment" icon="docker" href="/deployment/docker">
+    Deploy with Docker using environment variables
+  </Card>
+</CardGroup>

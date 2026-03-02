@@ -1,0 +1,659 @@
+---
+title: Background jobs
+description: Process asynchronous tasks with BullMQ and Redis queues
+---
+
+Hive includes BullMQ for processing background jobs. Use it for expensive operations like sending emails, generating reports, processing images, or any task that shouldn't block your API responses.
+
+## How it works
+
+BullMQ uses Redis to manage job queues. Jobs are added to queues and processed by workers asynchronously.
+
+```
+API Request ──▶ Add job to queue ──▶ Return immediately
+                           │
+                           ↓
+                      Worker processes job
+```
+
+## BullMQ wrapper
+
+Hive provides a wrapper for BullMQ configuration:
+
+```javascript src/bullMqWrapper.js
+import config from 'app-config';
+import { Queue, Worker } from 'bullMq';
+
+let connectionOpts = {
+  host: config.redis.url.split('@')[1].split(':')[0],
+  port: config.redis.url.split('@')[1].split(':')[1],
+  username: 'default',
+  password: config.redis.url.split(':')[2].split('@')[0],
+};
+
+export default {
+  Queue(queueName) {
+    return new Queue(queueName, {
+      connection: connectionOpts,
+    });
+  },
+  Worker(queueName, workerFn, options = {}) {
+    return new Worker(queueName, workerFn, {
+      ...options,
+      connection: connectionOpts,
+    });
+  },
+};
+```
+
+## Creating a queue
+
+Create queues in your services or handlers:
+
+```javascript src/services/emailQueue.js
+import bullMq from 'bullMqWrapper';
+
+const emailQueue = bullMq.Queue('emails');
+
+export default emailQueue;
+```
+
+## Adding jobs to queues
+
+<AccordionGroup>
+  <Accordion title="Simple job">
+    ```javascript src/resources/users/handlers/sendWelcomeEmail.js
+    import db from 'db';
+    import emailQueue from 'services/emailQueue';
+
+    const userService = db.services.users;
+
+    userService.on('created', async ({ doc }) => {
+      await emailQueue.add('welcome-email', {
+        userId: doc._id,
+        email: doc.email,
+        fullName: doc.fullName,
+      });
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Job with options">
+    ```javascript
+    await emailQueue.add('invoice', 
+      { 
+        invoiceId: invoice._id,
+        email: invoice.user.email 
+      },
+      {
+        delay: 1000 * 60, // Delay 1 minute
+        attempts: 3, // Retry 3 times
+        backoff: {
+          type: 'exponential',
+          delay: 2000,
+        },
+        removeOnComplete: true,
+        removeOnFail: false,
+      }
+    );
+    ```
+  </Accordion>
+
+  <Accordion title="Scheduled job">
+    ```javascript
+    // Run in 1 hour
+    await emailQueue.add(
+      'reminder',
+      { taskId: task._id },
+      { delay: 1000 * 60 * 60 }
+    );
+
+    // Run at specific time
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0);
+
+    await emailQueue.add(
+      'daily-summary',
+      { userId: user._id },
+      { delay: tomorrow.getTime() - Date.now() }
+    );
+    ```
+  </Accordion>
+
+  <Accordion title="Repeating job">
+    ```javascript
+    // Repeat every hour
+    await emailQueue.add(
+      'sync-data',
+      { source: 'external-api' },
+      {
+        repeat: {
+          every: 1000 * 60 * 60, // 1 hour
+        }
+      }
+    );
+
+    // Cron-based repetition
+    await emailQueue.add(
+      'cleanup',
+      {},
+      {
+        repeat: {
+          pattern: '0 0 * * *', // Daily at midnight
+        }
+      }
+    );
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Creating workers
+
+Workers process jobs from queues:
+
+```javascript src/services/workers/emailWorker.js
+import bullMq from 'bullMqWrapper';
+import emailService from 'services/emailService';
+import db from 'db';
+
+const userService = db.services.users;
+
+const worker = bullMq.Worker('emails', async (job) => {
+  const { name, data } = job;
+
+  switch (name) {
+    case 'welcome-email':
+      await emailService.sendWelcomeEmail({
+        to: data.email,
+        fullName: data.fullName,
+      });
+      break;
+
+    case 'invoice':
+      const invoice = await db.services.invoices.findOne({ 
+        _id: data.invoiceId 
+      });
+      await emailService.sendInvoice({
+        to: data.email,
+        invoice,
+      });
+      break;
+
+    case 'reminder':
+      const task = await db.services.tasks.findOne({ 
+        _id: data.taskId 
+      });
+      await emailService.sendTaskReminder({
+        to: task.user.email,
+        task,
+      });
+      break;
+
+    default:
+      throw new Error(`Unknown job type: ${name}`);
+  }
+}, {
+  concurrency: 5, // Process 5 jobs simultaneously
+});
+
+worker.on('completed', (job) => {
+  console.log(`Job ${job.id} completed`);
+});
+
+worker.on('failed', (job, err) => {
+  console.error(`Job ${job.id} failed:`, err);
+});
+
+export default worker;
+```
+
+<Note>
+  Workers run in the same process as your API by default. For production, run workers in separate processes.
+</Note>
+
+## Common job patterns
+
+<AccordionGroup>
+  <Accordion title="Send email on user action">
+    ```javascript src/resources/tasks/handlers/notifyAssignee.js
+    import db from 'db';
+    import emailQueue from 'services/emailQueue';
+    import ifUpdated from 'helpers/db/ifUpdated';
+
+    const taskService = db.services.tasks;
+
+    taskService.on('created', async ({ doc }) => {
+      if (doc.assignee) {
+        await emailQueue.add('task-assigned', {
+          email: doc.assignee.email,
+          taskTitle: doc.title,
+          assigneeName: doc.assignee.fullName,
+        });
+      }
+    });
+
+    taskService.on('updated', ifUpdated(['assignee'], async ({ doc, prevDoc }) => {
+      if (doc.assignee?._id !== prevDoc.assignee?._id) {
+        await emailQueue.add('task-reassigned', {
+          email: doc.assignee.email,
+          taskTitle: doc.title,
+          assigneeName: doc.assignee.fullName,
+        });
+      }
+    }));
+    ```
+  </Accordion>
+
+  <Accordion title="Generate report">
+    ```javascript src/resources/reports/endpoints/generate.js
+    import { z } from 'zod';
+    import isAuthorized from 'middlewares/isAuthorized';
+    import reportQueue from 'services/reportQueue';
+
+    export const handler = async (ctx) => {
+      const { startDate, endDate, type } = ctx.validatedData;
+
+      const job = await reportQueue.add('generate-report', {
+        userId: ctx.state.user._id,
+        startDate,
+        endDate,
+        type,
+      });
+
+      return { 
+        jobId: job.id,
+        status: 'processing' 
+      };
+    };
+
+    export const middlewares = [isAuthorized];
+    export const requestSchema = z.object({
+      startDate: z.coerce.date(),
+      endDate: z.coerce.date(),
+      type: z.enum(['sales', 'users', 'tasks']),
+    });
+    export const endpoint = { method: 'POST', url: '/generate' };
+    ```
+
+    Worker:
+
+    ```javascript src/services/workers/reportWorker.js
+    import bullMq from 'bullMqWrapper';
+    import { generatePDFReport } from 'services/reportService';
+    import db from 'db';
+
+    const reportService = db.services.reports;
+
+    const worker = bullMq.Worker('reports', async (job) => {
+      const { userId, startDate, endDate, type } = job.data;
+
+      // Generate report
+      const pdfUrl = await generatePDFReport({ startDate, endDate, type });
+
+      // Save to database
+      await reportService.create({
+        user: { _id: userId },
+        type,
+        startDate,
+        endDate,
+        url: pdfUrl,
+        status: 'completed',
+      });
+
+      return { url: pdfUrl };
+    });
+
+    export default worker;
+    ```
+  </Accordion>
+
+  <Accordion title="Process uploaded file">
+    ```javascript src/resources/files/endpoints/upload.js
+    import uploadFile from 'middlewares/uploadFile';
+    import isAuthorized from 'middlewares/isAuthorized';
+    import fileQueue from 'services/fileQueue';
+    import { uploadToS3 } from 'services/s3';
+
+    export const handler = async (ctx) => {
+      const file = ctx.request.file;
+
+      // Upload original
+      const url = await uploadToS3({
+        buffer: file.buffer,
+        mimetype: file.mimetype,
+        originalname: file.originalname,
+      });
+
+      // Queue processing (resize, thumbnail, etc.)
+      await fileQueue.add('process-image', {
+        url,
+        userId: ctx.state.user._id,
+      });
+
+      return { url };
+    };
+
+    export const middlewares = [
+      isAuthorized,
+      uploadFile.single('file'),
+    ];
+    ```
+  </Accordion>
+
+  <Accordion title="Batch data import">
+    ```javascript src/resources/imports/endpoints/import.js
+    import { z } from 'zod';
+    import importQueue from 'services/importQueue';
+
+    export const handler = async (ctx) => {
+      const { data } = ctx.validatedData;
+
+      // Split into chunks
+      const chunkSize = 100;
+      const chunks = [];
+      for (let i = 0; i < data.length; i += chunkSize) {
+        chunks.push(data.slice(i, i + chunkSize));
+      }
+
+      // Add chunk jobs
+      const jobs = await Promise.all(
+        chunks.map((chunk, index) =>
+          importQueue.add('import-chunk', {
+            chunk,
+            index,
+            total: chunks.length,
+            userId: ctx.state.user._id,
+          })
+        )
+      );
+
+      return { 
+        jobCount: jobs.length,
+        status: 'processing' 
+      };
+    };
+
+    export const middlewares = [isAuthorized];
+    export const requestSchema = z.object({
+      data: z.array(z.object({})),
+    });
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Job status tracking
+
+Check job status and results:
+
+```javascript src/resources/jobs/endpoints/status.js
+import { z } from 'zod';
+import isAuthorized from 'middlewares/isAuthorized';
+import reportQueue from 'services/reportQueue';
+
+export const handler = async (ctx) => {
+  const { jobId } = ctx.params;
+  const job = await reportQueue.getJob(jobId);
+
+  if (!job) {
+    ctx.throw(404, 'Job not found');
+  }
+
+  const state = await job.getState();
+  const progress = job.progress;
+  const result = job.returnvalue;
+
+  return {
+    id: job.id,
+    state, // 'waiting', 'active', 'completed', 'failed'
+    progress,
+    result,
+  };
+};
+
+export const middlewares = [isAuthorized];
+export const requestSchema = z.object({
+  jobId: z.string(),
+});
+export const endpoint = { method: 'GET', url: '/:jobId' };
+```
+
+## Progress reporting
+
+Update job progress from workers:
+
+```javascript src/services/workers/importWorker.js
+import bullMq from 'bullMqWrapper';
+import db from 'db';
+
+const taskService = db.services.tasks;
+
+const worker = bullMq.Worker('imports', async (job) => {
+  const { chunk, index, total } = job.data;
+
+  for (let i = 0; i < chunk.length; i++) {
+    const item = chunk[i];
+
+    // Process item
+    await taskService.create(item);
+
+    // Update progress
+    const progress = ((index * chunk.length + i + 1) / (total * chunk.length)) * 100;
+    await job.updateProgress(progress);
+  }
+
+  return { imported: chunk.length };
+});
+```
+
+## Error handling
+
+<CodeGroup>
+```javascript Retry failed jobs
+const worker = bullMq.Worker('emails', async (job) => {
+  try {
+    await emailService.send(job.data);
+  } catch (error) {
+    // Log error
+    console.error('Email failed:', error);
+
+    // Throw to trigger retry
+    throw error;
+  }
+}, {
+  concurrency: 5,
+});
+
+worker.on('failed', async (job, err) => {
+  if (job.attemptsMade >= job.opts.attempts) {
+    // All retries exhausted
+    await db.services.failedJobs.create({
+      jobId: job.id,
+      name: job.name,
+      data: job.data,
+      error: err.message,
+    });
+  }
+});
+```
+
+```javascript Custom retry logic
+await emailQueue.add(
+  'important-email',
+  { email: 'user@example.com' },
+  {
+    attempts: 5,
+    backoff: {
+      type: 'exponential',
+      delay: 2000, // 2s, 4s, 8s, 16s, 32s
+    },
+  }
+);
+```
+</CodeGroup>
+
+## Production setup
+
+Run workers in separate processes:
+
+```javascript worker.js
+import './src/services/workers/emailWorker.js';
+import './src/services/workers/reportWorker.js';
+import './src/services/workers/importWorker.js';
+
+console.log('Workers started');
+
+// Keep process alive
+process.on('SIGTERM', () => {
+  console.log('Shutting down workers...');
+  process.exit(0);
+});
+```
+
+Run with:
+
+```bash
+node worker.js
+```
+
+Or use PM2:
+
+```json ecosystem.config.js
+module.exports = {
+  apps: [
+    {
+      name: 'api',
+      script: './src/app.js',
+      instances: 2,
+    },
+    {
+      name: 'workers',
+      script: './worker.js',
+      instances: 1,
+    },
+  ],
+};
+```
+
+## Queue monitoring
+
+BullMQ provides metrics and events:
+
+```javascript
+const queue = bullMq.Queue('emails');
+
+// Get queue stats
+const counts = await queue.getJobCounts();
+console.log('Waiting:', counts.waiting);
+console.log('Active:', counts.active);
+console.log('Completed:', counts.completed);
+console.log('Failed:', counts.failed);
+
+// Listen to queue events
+queue.on('waiting', (jobId) => {
+  console.log(`Job ${jobId} is waiting`);
+});
+
+queue.on('active', (job) => {
+  console.log(`Job ${job.id} is active`);
+});
+
+queue.on('completed', (job, result) => {
+  console.log(`Job ${job.id} completed with result:`, result);
+});
+
+queue.on('failed', (job, err) => {
+  console.error(`Job ${job.id} failed:`, err);
+});
+```
+
+## Best practices
+
+<AccordionGroup>
+  <Accordion title="Keep jobs idempotent">
+    Jobs may be retried, so make them safe to run multiple times:
+
+    ```javascript
+    const worker = bullMq.Worker('emails', async (job) => {
+      const { userId, type } = job.data;
+
+      // Check if already processed
+      const existing = await db.services.sentEmails.findOne({
+        userId,
+        type,
+        sentAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+      });
+
+      if (existing) {
+        console.log('Email already sent, skipping');
+        return;
+      }
+
+      // Send email
+      await emailService.send({ userId, type });
+
+      // Record sent
+      await db.services.sentEmails.create({
+        userId,
+        type,
+        sentAt: new Date(),
+      });
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Use job priorities">
+    ```javascript
+    // High priority
+    await emailQueue.add(
+      'urgent-notification',
+      { userId },
+      { priority: 1 }
+    );
+
+    // Normal priority
+    await emailQueue.add(
+      'newsletter',
+      { userId },
+      { priority: 10 }
+    );
+    ```
+  </Accordion>
+
+  <Accordion title="Clean up old jobs">
+    ```javascript
+    // Remove completed jobs after 1 hour
+    await emailQueue.add(
+      'email',
+      { data },
+      { 
+        removeOnComplete: { age: 3600 },
+        removeOnFail: { age: 86400 }, // Keep failed for 24h
+      }
+    );
+    ```
+  </Accordion>
+
+  <Accordion title="Limit queue size">
+    ```javascript
+    const waiting = await queue.getWaitingCount();
+    
+    if (waiting > 10000) {
+      ctx.throw(429, 'Queue is full, try again later');
+    }
+
+    await queue.add('job', data);
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Schedulers" icon="calendar" href="/guides/schedulers">
+    Run jobs on a schedule with cron
+  </Card>
+  <Card title="Event handlers" icon="bolt" href="/guides/event-handlers">
+    Trigger jobs on database changes
+  </Card>
+</CardGroup>

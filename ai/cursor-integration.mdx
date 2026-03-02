@@ -1,0 +1,391 @@
+---
+title: Cursor integration
+description: Set up Cursor AI to work with Hive commands and skills
+---
+
+Cursor is an AI-powered code editor that understands Hive conventions. When you initialize a Hive project, Cursor integration is automatically configured.
+
+## What's included
+
+Hive projects ship with:
+
+- **Commands** — Natural language directives in `.cursor/commands/`
+- **Skills** — Pattern libraries in `.cursor/skills/`
+- **Conventions** — Hive-specific rules and best practices
+
+These files teach Cursor how to generate production-ready Hive code.
+
+## Project structure
+
+```
+my-app/
+├── .cursor/
+│   ├── commands/
+│   │   ├── add-resource.md
+│   │   ├── add-endpoint.md
+│   │   ├── add-handler.md
+│   │   ├── add-middleware.md
+│   │   ├── add-service.md
+│   │   └── add-scheduler.md
+│   └── skills/
+│       ├── hive-overview/
+│       ├── hive-endpoint/
+│       ├── hive-handler/
+│       ├── hive-schema/
+│       ├── hive-database/
+│       ├── hive-middleware/
+│       └── ...
+└── src/
+```
+
+## Getting started
+
+<Steps>
+  <Step title="Initialize a Hive project">
+    ```bash
+    hive init my-app
+    cd my-app
+    ```
+    
+    This creates a new project with `.cursor/` configuration already set up.
+  </Step>
+  
+  <Step title="Open in Cursor">
+    ```bash
+    cursor .
+    ```
+    
+    Or open the folder manually in Cursor.
+  </Step>
+  
+  <Step title="Start using commands">
+    Open Cursor's AI chat and type:
+    
+    ```
+    add-resource tasks
+    ```
+    
+    Cursor will:
+    - Read the command documentation from `.cursor/commands/add-resource.md`
+    - Apply skills from `.cursor/skills/`
+    - Generate a complete resource with schema and folders
+  </Step>
+</Steps>
+
+## Available commands
+
+Cursor understands these commands out of the box:
+
+| Command | What it does |
+|---------|-------------|
+| `add-resource {name}` | Create resource with schema + folders |
+| `add-endpoint {resource} {method} {fields}` | Create endpoint with inferred types |
+| `add-handler {resource}` | Create event handlers |
+| `add-middleware {name}` | Create custom middleware |
+| `add-service {name} {methods}` | Create service with library setup |
+| `add-scheduler {name} {schedule}` | Create cron job |
+
+<Note>
+Commands are documentation files, not executable scripts. Cursor reads them and generates appropriate code.
+</Note>
+
+## Skills explained
+
+Skills teach Cursor about Hive patterns:
+
+<CardGroup cols={2}>
+  <Card title="hive-overview" icon="map">
+    Framework structure, directory layout, and key conventions
+  </Card>
+  <Card title="hive-endpoint" icon="route">
+    How to create API endpoints with proper exports
+  </Card>
+  <Card title="hive-handler" icon="bolt">
+    Event handler patterns and common use cases
+  </Card>
+  <Card title="hive-schema" icon="database">
+    Database schema patterns with Zod
+  </Card>
+  <Card title="hive-database" icon="server">
+    Database operations and query patterns
+  </Card>
+  <Card title="hive-middleware" icon="shield">
+    Middleware creation and usage
+  </Card>
+</CardGroup>
+
+### When skills apply
+
+Skills are context-aware and apply automatically:
+
+```yaml
+---
+name: hive-endpoint
+globs:
+  - src/resources/**/endpoints/*.js
+alwaysApply: false
+---
+```
+
+When you work in `src/resources/tasks/endpoints/list.js`, Cursor loads the `hive-endpoint` skill and knows how to structure the file.
+
+## Using commands effectively
+
+### Be specific with types
+
+Cursor infers types from field names, but you can be explicit:
+
+```
+add-endpoint tasks post title, description, dueOn, isCompleted, project: { _id, name }
+```
+
+- `dueOn` → inferred as `z.coerce.date()`
+- `isCompleted` → inferred as `z.coerce.boolean()`
+- `project: { _id, name }` → object with specific fields
+
+### Combine multiple commands
+
+Build complete features in one session:
+
+```
+add-resource projects
+add-endpoint projects post name, description, owner: { _id }
+add-endpoint projects get page, perPage, status
+add-endpoint projects update /:id name, status
+add-endpoint projects delete /:id
+add-handler projects
+```
+
+### Customize generated code
+
+After Cursor generates code, refine it:
+
+```
+Update the tasks create endpoint to require authentication and validate that the assignee exists
+```
+
+Cursor will:
+- Add authentication middleware
+- Add `shouldExist` middleware for assignee validation
+- Update the code following Hive conventions
+
+## Tips for working with Cursor
+
+<Tip>
+**Start with the command** — Don't describe what you want. Use the command directly:
+
+**Good:** `add-endpoint tasks post title, dueOn`
+
+**Less effective:** "I need to create an endpoint for tasks that accepts title and dueOn"
+</Tip>
+
+<Tip>
+**Let Cursor infer types** — Field names like `createdAt`, `isActive`, `page` automatically get correct types.
+</Tip>
+
+<Tip>
+**Reference existing code** — Cursor learns from your codebase:
+
+"Create a new endpoint for invoices similar to the tasks list endpoint"
+</Tip>
+
+<Tip>
+**Use natural refinements** — After generating code:
+
+- "Add pagination to this endpoint"
+- "Make this endpoint public"
+- "Add a middleware to check if user is admin"
+</Tip>
+
+## Examples
+
+### Building a tasks API
+
+<CodeGroup>
+```bash Step 1: Create resource
+add-resource tasks
+```
+
+```bash Step 2: Add endpoints
+add-endpoint tasks post title, description, dueOn, assignee: { _id, fullName }
+add-endpoint tasks get page, perPage, status, isCompleted
+add-endpoint tasks update /:id title, status
+add-endpoint tasks delete /:id
+```
+
+```bash Step 3: Add handlers
+add-handler tasks
+```
+
+```bash Step 4: Customize
+Update the tasks create endpoint to send a notification to the assignee when a task is assigned
+```
+</CodeGroup>
+
+### Adding external service
+
+<CodeGroup>
+```bash Create service
+add-service slack sendChannelMessage, replyToThread
+```
+
+```bash Install library
+npm i @slack/web-api
+```
+
+```bash Use in handler
+Update the tasks handler to send a Slack message when a task is created
+```
+</CodeGroup>
+
+### Creating scheduled jobs
+
+<CodeGroup>
+```bash Create scheduler
+add-scheduler markOverdueInvoices daily at midnight
+```
+
+```bash Refine
+Update the scheduler to also send a Slack notification when invoices are marked overdue
+```
+</CodeGroup>
+
+## Understanding generated code
+
+Cursor follows strict conventions. Here's what it generates:
+
+### Endpoints
+
+Every endpoint has exactly 4 exports:
+
+```javascript
+// 1. Middlewares (array)
+export const middlewares = [];
+
+// 2. Request schema (Zod object)
+export const requestSchema = z.object({ ... });
+
+// 3. Handler (async function)
+export const handler = async (ctx) => { ... };
+
+// 4. Endpoint config (object)
+export const endpoint = { url: '/', method: 'get' };
+```
+
+### Schemas
+
+Every schema extends `dbSchema`:
+
+```javascript
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema.js';
+
+const schema = dbSchema.extend({
+  // Your fields
+});
+
+export default schema;
+export const secureFields = []; // Hidden from API
+```
+
+### Handlers
+
+Handlers listen to service events:
+
+```javascript
+import db from 'db';
+
+const tasksService = db.services.tasks;
+
+tasksService.on('created', async ({ doc }) => {
+  // React to creation
+});
+
+tasksService.on('updated', async ({ doc, prevDoc }) => {
+  // React to update
+});
+
+tasksService.on('removed', async ({ doc }) => {
+  // React to deletion
+});
+```
+
+## Troubleshooting
+
+### Cursor doesn't recognize commands
+
+**Check:** Make sure `.cursor/` directory exists in your project root.
+
+**Fix:** If missing, copy from a fresh Hive project or from the starter template.
+
+### Generated code doesn't follow conventions
+
+**Check:** Ensure you're using the latest Hive version.
+
+**Fix:** Update Hive and reinitialize `.cursor/` files:
+
+```bash
+npm install -g @paralect/hive@latest
+hive init --update-cursor
+```
+
+### Skills not applying
+
+**Check:** Verify file path matches skill globs.
+
+**Example:** Endpoint skills only apply to files in `src/resources/**/endpoints/*.js`
+
+**Fix:** Move files to correct location or create them with commands.
+
+## Advanced usage
+
+### Custom skills
+
+You can add your own skills to `.cursor/skills/`:
+
+```markdown .cursor/skills/custom-pattern/SKILL.md
+---
+name: custom-pattern
+description: Your custom pattern description
+globs:
+  - src/custom/**/*.js
+alwaysApply: false
+---
+
+# Your Custom Pattern
+
+Document your pattern here...
+```
+
+Cursor will apply this skill when working in matching files.
+
+### Custom commands
+
+Add domain-specific commands to `.cursor/commands/`:
+
+```markdown .cursor/commands/add-notification-template.md
+# Add Notification Template
+
+Creates a notification template with email and push variants.
+
+## Command Format
+
+add-notification-template {name} {channels}
+
+**Examples:**
+- add-notification-template taskAssigned email, push
+- add-notification-template invoiceDue email, sms
+```
+
+Cursor will understand and execute these commands.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="View all commands" icon="terminal" href="/ai/commands">
+    Complete reference for all AI commands
+  </Card>
+  <Card title="AI overview" icon="wand-magic-sparkles" href="/ai/overview">
+    Learn how AI-native development works
+  </Card>
+</CardGroup>

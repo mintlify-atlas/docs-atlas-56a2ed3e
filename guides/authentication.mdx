@@ -1,0 +1,644 @@
+---
+title: Authentication
+description: Set up token-based authentication with cookies and bearer tokens
+---
+
+Hive includes a token-based authentication system with support for cookies, bearer tokens, and custom headers. The `users` and `tokens` resources handle authentication out of the box.
+
+## How it works
+
+Authentication in Hive uses access tokens stored in:
+1. HTTP-only cookies (`access_token`)
+2. Authorization headers (`Bearer <token>`)
+3. Custom headers (configurable)
+
+Tokens are linked to users and validated on each request.
+
+## Token schema
+
+Tokens are stored in MongoDB with user references:
+
+```javascript src/resources/tokens/tokens.schema.js
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+export default dbSchema.extend({
+  user: z.object({
+    _id: z.string(),
+  }),
+  token: z.string(),
+  otp: z.string().nullable().optional(),
+  metadata: z.object({}).optional()
+});
+```
+
+## Creating tokens
+
+Use the `storeToken` helper to generate and store authentication tokens:
+
+```javascript src/resources/tokens/methods/storeToken.js
+import db from 'db';
+import crypto from 'crypto';
+import util from 'util';
+import setCookie from 'services/setCookie';
+
+const randomBytes = util.promisify(crypto.randomBytes, crypto);
+const tokenService = db.services.tokens;
+
+const generateSecureToken = async (tokenLength = 32) => {
+  const buf = await randomBytes(tokenLength);
+  return buf.toString('hex');
+};
+
+export default async (ctx, { userId, metadata = null }) => {
+  const token = await generateSecureToken();
+  const otp = await generateSecureToken();
+
+  await tokenService.create({
+    token,
+    user: {
+      _id: userId,
+    },
+    otp,
+    ...(metadata ? { metadata } : {})
+  });
+
+  setCookie(ctx, { name: 'access_token', value: token });
+
+  return {
+    token,
+    otp,
+  };
+};
+```
+
+## Login endpoint example
+
+Create a login endpoint that validates credentials and returns a token:
+
+```javascript src/resources/auth/endpoints/login.js
+import { z } from 'zod';
+import db from 'db';
+import bcrypt from 'bcryptjs';
+import storeToken from 'resources/tokens/methods/storeToken';
+
+const userService = db.services.users;
+
+export const handler = async (ctx) => {
+  const { email, password } = ctx.validatedData;
+
+  // Find user by email
+  const user = await userService.findOne(
+    { email },
+    { isIncludeSecureFields: true }
+  );
+
+  if (!user) {
+    ctx.throw(401, 'Invalid credentials');
+  }
+
+  // Verify password
+  const isValidPassword = await bcrypt.compare(password, user.password);
+  
+  if (!isValidPassword) {
+    ctx.throw(401, 'Invalid credentials');
+  }
+
+  // Create token and set cookie
+  const { token } = await storeToken(ctx, { 
+    userId: user._id,
+    metadata: { loginAt: new Date() }
+  });
+
+  return {
+    user: {
+      _id: user._id,
+      email: user.email,
+      fullName: user.fullName,
+    },
+    token,
+  };
+};
+
+export const middlewares = ['allowNoAuth'];
+
+export const requestSchema = z.object({
+  email: z.string().email(),
+  password: z.string(),
+});
+
+export const endpoint = {
+  method: 'POST',
+  url: '/login',
+};
+```
+
+## Signup endpoint example
+
+```javascript src/resources/auth/endpoints/signup.js
+import { z } from 'zod';
+import db from 'db';
+import bcrypt from 'bcryptjs';
+import storeToken from 'resources/tokens/methods/storeToken';
+
+const userService = db.services.users;
+
+export const handler = async (ctx) => {
+  const { email, password, fullName } = ctx.validatedData;
+
+  // Check if user exists
+  const exists = await userService.exists({ email });
+  if (exists) {
+    ctx.throw(400, { 
+      clientErrors: { email: ['Email already registered'] } 
+    });
+  }
+
+  // Hash password
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  // Create user
+  const user = await userService.create({
+    email,
+    fullName,
+    password: hashedPassword,
+  });
+
+  // Create token
+  const { token } = await storeToken(ctx, { userId: user._id });
+
+  return {
+    user: {
+      _id: user._id,
+      email: user.email,
+      fullName: user.fullName,
+    },
+    token,
+  };
+};
+
+export const middlewares = ['allowNoAuth'];
+
+export const requestSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+  fullName: z.string().min(2),
+});
+
+export const endpoint = {
+  method: 'POST',
+  url: '/signup',
+};
+```
+
+## Getting current user
+
+The `isAuthorized` middleware automatically attaches the user to `ctx.state.user`:
+
+```javascript src/resources/users/endpoints/getCurrentUser.js
+import { z } from 'zod';
+import isAuthorized from 'middlewares/isAuthorized';
+
+export const handler = async (ctx) => {
+  ctx.body = ctx.state.user;
+};
+
+export const middlewares = [isAuthorized];
+export const requestSchema = z.object({});
+
+export const endpoint = {
+  method: "GET",
+  url: "/me",
+};
+```
+
+## Logout endpoint
+
+```javascript src/resources/auth/endpoints/logout.js
+import { z } from 'zod';
+import db from 'db';
+import isAuthorized from 'middlewares/isAuthorized';
+
+const tokenService = db.services.tokens;
+
+export const handler = async (ctx) => {
+  const accessToken = ctx.state.accessToken;
+
+  if (accessToken) {
+    await tokenService.remove({ token: accessToken });
+  }
+
+  // Clear cookie
+  ctx.cookies.set('access_token', null);
+
+  return { success: true };
+};
+
+export const middlewares = [isAuthorized];
+
+export const requestSchema = z.object({});
+
+export const endpoint = {
+  method: 'POST',
+  url: '/logout',
+};
+```
+
+## How authentication works
+
+The authentication flow is handled by the `attachUser` middleware:
+
+```javascript src/middlewares/attachUser.js
+import db from 'db';
+import config from 'app-config';
+
+const userService = db.services.users;
+const tokenService = db.services.tokens;
+
+const storeTokenToState = async (ctx) => {
+  let accessToken = ctx.cookies.get('access_token');
+
+  // Check Authorization header
+  const { authorization } = ctx.headers;
+  if (!accessToken && authorization) {
+    accessToken = authorization.replace('Bearer', '').trim();
+  }
+
+  // Check custom header
+  if (!accessToken && config._hive.authHeaderName && ctx.headers[config._hive.authHeaderName]) {
+    accessToken = ctx.headers[config._hive.authHeaderName];
+  }
+
+  ctx.state.accessToken = accessToken;
+};
+
+export default async (ctx, next) => {
+  storeTokenToState(ctx);
+
+  let token;
+  if (ctx.state.accessToken) {
+    token = await tokenService.findOne({ token: ctx.state.accessToken });
+  }
+
+  if (token) {
+    ctx.state.user = await userService.findOne({ _id: token.user._id });
+
+    if (token.metadata) {
+      ctx.state.user.authMetadata = token.metadata;
+    }
+  }
+
+  await next();
+};
+```
+
+<Note>
+  The `attachUser` middleware checks for tokens in this order: cookies, Authorization header, custom header.
+</Note>
+
+## Using bearer tokens
+
+Clients can authenticate with bearer tokens:
+
+```bash
+curl https://api.example.com/users/me \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE"
+```
+
+```javascript
+// JavaScript fetch
+fetch('https://api.example.com/users/me', {
+  headers: {
+    'Authorization': `Bearer ${token}`
+  }
+});
+```
+
+## OAuth integration
+
+The user schema supports OAuth providers:
+
+```javascript src/resources/users/users.schema.js
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const users = dbSchema.extend({
+  email: z.string().email(),
+  fullName: z.string(),
+  avatarUrl: z.string().url().optional(),
+  password: z.string(),
+  oauth: z.object({
+    google: z.object({}),
+  }).optional(),
+});
+
+export default users;
+```
+
+Example OAuth login:
+
+```javascript src/resources/auth/endpoints/googleCallback.js
+import { z } from 'zod';
+import ensureUserCreated from 'resources/users/methods/ensureUserCreated';
+import storeToken from 'resources/tokens/methods/storeToken';
+
+export const handler = async (ctx) => {
+  const { email, fullName, googleId, avatarUrl } = ctx.validatedData;
+
+  // Create or update user
+  const user = await ensureUserCreated({
+    email,
+    fullName,
+    avatarUrl,
+    oauth: {
+      google: { id: googleId },
+    },
+  });
+
+  // Create token
+  const { token } = await storeToken(ctx, { userId: user._id });
+
+  return { user, token };
+};
+
+export const middlewares = ['allowNoAuth'];
+
+export const requestSchema = z.object({
+  email: z.string().email(),
+  fullName: z.string(),
+  googleId: z.string(),
+  avatarUrl: z.string().url().optional(),
+});
+
+export const endpoint = {
+  method: 'POST',
+  url: '/oauth/google/callback',
+};
+```
+
+The `ensureUserCreated` helper from Hive:
+
+```javascript src/resources/users/methods/ensureUserCreated.js
+import db from 'db';
+import _ from 'lodash';
+import slug from 'slug';
+
+const userService = db.services.users;
+
+const ensureUserCreated = async (userData) => {
+  const user = await userService.findOne({ email: userData.email });
+
+  if (user) {
+    if (userData.oauth) {
+      const changedUser = await userService.updateOne(
+        { _id: user._id },
+        (old) => {
+          const newUser = old;
+          newUser.oauth = old.oauth || {};
+          newUser.oauth = {
+            ...newUser.oauth,
+            ...userData.oauth
+          }
+          newUser.isEmailVerified = true;
+          return newUser;
+        }
+      );
+      return changedUser;
+    }
+    return user;
+  }
+
+  return await createUserAccount(userData);
+};
+
+export default ensureUserCreated;
+```
+
+## Token metadata
+
+Store additional data with tokens:
+
+```javascript
+const { token } = await storeToken(ctx, {
+  userId: user._id,
+  metadata: {
+    loginAt: new Date(),
+    ipAddress: ctx.ip,
+    userAgent: ctx.headers['user-agent'],
+    deviceId: ctx.validatedData.deviceId,
+  },
+});
+```
+
+Access metadata in handlers:
+
+```javascript
+export const handler = async (ctx) => {
+  const user = ctx.state.user;
+  const authMetadata = user.authMetadata;
+  
+  console.log('User logged in at:', authMetadata.loginAt);
+  console.log('From IP:', authMetadata.ipAddress);
+};
+```
+
+## Password reset flow
+
+<Steps>
+  <Step title="Request reset">
+    ```javascript src/resources/auth/endpoints/requestReset.js
+    import { z } from 'zod';
+    import db from 'db';
+    import storeToken from 'resources/tokens/methods/storeToken';
+    import emailService from 'services/emailService';
+
+    const userService = db.services.users;
+
+    export const handler = async (ctx) => {
+      const { email } = ctx.validatedData;
+      const user = await userService.findOne({ email });
+
+      if (!user) {
+        // Don't reveal if email exists
+        return { success: true };
+      }
+
+      const { token } = await storeToken(ctx, {
+        userId: user._id,
+        metadata: { type: 'password_reset' },
+      });
+
+      await emailService.sendPasswordReset({
+        to: user.email,
+        resetUrl: `https://app.com/reset?token=${token}`,
+      });
+
+      return { success: true };
+    };
+
+    export const middlewares = ['allowNoAuth'];
+    export const requestSchema = z.object({
+      email: z.string().email(),
+    });
+    export const endpoint = { method: 'POST', url: '/request-reset' };
+    ```
+  </Step>
+
+  <Step title="Reset password">
+    ```javascript src/resources/auth/endpoints/resetPassword.js
+    import { z } from 'zod';
+    import db from 'db';
+    import bcrypt from 'bcryptjs';
+
+    const userService = db.services.users;
+    const tokenService = db.services.tokens;
+
+    export const handler = async (ctx) => {
+      const { token, password } = ctx.validatedData;
+
+      const tokenDoc = await tokenService.findOne({ token });
+      if (!tokenDoc || tokenDoc.metadata?.type !== 'password_reset') {
+        ctx.throw(400, 'Invalid or expired token');
+      }
+
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      await userService.updateOne(
+        { _id: tokenDoc.user._id },
+        (user) => ({ ...user, password: hashedPassword }),
+        { isIncludeSecureFields: true }
+      );
+
+      // Delete reset token
+      await tokenService.remove({ _id: tokenDoc._id });
+
+      return { success: true };
+    };
+
+    export const middlewares = ['allowNoAuth'];
+    export const requestSchema = z.object({
+      token: z.string(),
+      password: z.string().min(8),
+    });
+    export const endpoint = { method: 'POST', url: '/reset-password' };
+    ```
+  </Step>
+</Steps>
+
+## Custom authentication headers
+
+Configure custom headers in `app-config`:
+
+```javascript src/app-config/app.js
+export default {
+  _hive: {
+    authHeaderName: 'x-api-key',
+  },
+};
+```
+
+Clients can now authenticate with:
+
+```bash
+curl https://api.example.com/users/me \
+  -H "x-api-key: YOUR_TOKEN_HERE"
+```
+
+## Protecting endpoints
+
+Use the `isAuthorized` middleware to require authentication:
+
+```javascript
+import isAuthorized from 'middlewares/isAuthorized';
+
+export const middlewares = [isAuthorized];
+```
+
+Make endpoints public with `allowNoAuth`:
+
+```javascript
+export const middlewares = ['allowNoAuth'];
+```
+
+## Security best practices
+
+<AccordionGroup>
+  <Accordion title="Hash passwords">
+    Always hash passwords before storing:
+
+    ```javascript
+    import bcrypt from 'bcryptjs';
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await userService.create({ email, password: hashedPassword });
+    ```
+  </Accordion>
+
+  <Accordion title="Mark password as secure field">
+    ```javascript
+    export default users;
+    export const secureFields = ['password'];
+    ```
+  </Accordion>
+
+  <Accordion title="Use HTTP-only cookies">
+    Cookies are set with HTTP-only flag by default:
+
+    ```javascript src/services/setCookie.js
+    export default (ctx, { name, value }) => {
+      ctx.cookies.set(name, value, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      });
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Implement token expiration">
+    Add `expiresAt` to token schema:
+
+    ```javascript
+    const tokens = dbSchema.extend({
+      user: z.object({ _id: z.string() }),
+      token: z.string(),
+      expiresAt: z.coerce.date(),
+    });
+    ```
+
+    Check expiration in `attachUser`:
+
+    ```javascript
+    if (token) {
+      if (new Date() > new Date(token.expiresAt)) {
+        await tokenService.remove({ _id: token._id });
+        return next();
+      }
+      ctx.state.user = await userService.findOne({ _id: token.user._id });
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Rate limit auth endpoints">
+    ```javascript
+    import rateLimit from 'middlewares/rateLimit';
+
+    export const middlewares = [
+      'allowNoAuth',
+      rateLimit(5, 60000), // 5 requests per minute
+    ];
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Middlewares" icon="shield" href="/guides/middlewares">
+    Create custom authorization logic
+  </Card>
+  <Card title="Building endpoints" icon="route" href="/guides/building-endpoints">
+    Build authenticated API routes
+  </Card>
+</CardGroup>

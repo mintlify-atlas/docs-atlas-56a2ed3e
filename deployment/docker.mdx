@@ -1,0 +1,487 @@
+---
+title: Docker deployment
+description: Deploy Hive applications using Docker with production-optimized containers and multi-stage builds
+---
+
+Hive includes multiple Dockerfile configurations optimized for different environments. All Dockerfiles use Alpine Linux for minimal image sizes and include Python dependencies required by some npm packages.
+
+## Available Dockerfiles
+
+Hive provides three Docker configurations:
+
+| Dockerfile | Purpose | Node Environment |
+|------------|---------|------------------|
+| `Dockerfile` | Standard production build | `production` |
+| `Dockerfile.prod` | Production with environment management | `production` |
+| `Dockerfile.dev` | Development with hot reload | `development` |
+
+## Production deployment
+
+### Standard production build
+
+The standard `Dockerfile` provides a simple, optimized production build:
+
+```dockerfile
+FROM --platform=linux/amd64 node:16.13.1-alpine3.13 as base
+RUN apk add --no-cache python3 py3-pip
+
+ENV NODE_ENV=production
+ENV APP_ENV=production
+
+WORKDIR /app
+EXPOSE 3001
+COPY ["./package*.json", "/app/"]
+
+RUN npm set progress=false && npm config set depth 0
+RUN npm set-script prepare ""
+RUN npm ci --only=production --quiet
+
+COPY ./ ./
+
+RUN mkdir -p /project/logs
+RUN touch /project/logs/log.txt
+
+CMD npm start 2>&1 | tee /project/logs/log.txt
+```
+
+<Note>
+The Dockerfile uses `--platform=linux/amd64` to ensure compatibility across different architectures, particularly important for M1/M2 Macs.
+</Note>
+
+### Building the production image
+
+<Steps>
+  <Step title="Prepare your application">
+    First, prepare your Hive application for production:
+    
+    ```bash
+    hive prepare ./src
+    ```
+    
+    This merges your source code with the framework in `.hive/`.
+  </Step>
+  
+  <Step title="Build the Docker image">
+    Build your production image:
+    
+    ```bash
+    docker build -t my-hive-app:latest .
+    ```
+    
+    Or with a specific Dockerfile:
+    
+    ```bash
+    docker build -f Dockerfile.prod -t my-hive-app:latest .
+    ```
+  </Step>
+  
+  <Step title="Run the container">
+    Start your application with required environment variables:
+    
+    ```bash
+    docker run -p 3001:3001 \
+      -e MONGODB_URI=mongodb://mongo:27017/myapp \
+      -e REDIS_URI=redis://redis:6379 \
+      -e APP_ENV=production \
+      my-hive-app:latest
+    ```
+  </Step>
+</Steps>
+
+### Advanced production build
+
+The `Dockerfile.prod` includes environment file management:
+
+```dockerfile
+FROM node:16.13.1-alpine3.13 as base
+RUN apk add --no-cache python3 py3-pip
+
+ENV NODE_ENV=production
+ENV APP_ENV=production
+
+WORKDIR /app
+EXPOSE 3001
+COPY ["./package*.json", "./.eslintrc.js", "/app/"]
+
+RUN npm set progress=false && npm config set depth 0
+RUN npm set-script prepare ""
+RUN npm ci --only=production --quiet
+
+COPY ./ ./
+
+# Environment file management
+RUN ls /app/src/config/.env
+RUN rm /app/src/config/.env
+RUN mv /app/src/config/.env.production /app/src/config/.env
+RUN cat /app/src/config/.env
+
+RUN mkdir -p /project/logs
+RUN touch /project/logs/log.txt
+
+CMD npm start 2>&1 | tee /project/logs/log.txt
+```
+
+This Dockerfile swaps environment files at build time, replacing `.env` with `.env.production`.
+
+<Warning>
+Managing environment files in the Docker image can expose secrets. Consider using environment variables at runtime instead of building them into the image.
+</Warning>
+
+## Development with Docker
+
+The `Dockerfile.dev` uses multi-stage builds for development workflows:
+
+```dockerfile
+FROM node:16.13.1-alpine3.13 as base
+RUN apk add --no-cache python3 py3-pip
+
+ARG NODE_ENV=development
+ARG APP_ENV
+ARG PROJECT_SRC=/project
+
+ENV NODE_ENV=$NODE_ENV
+ENV APP_ENV=$APP_ENV
+ENV PROJECT_SRC=$PROJECT_SRC
+
+WORKDIR /app
+COPY ["./package*.json", "/app/"]
+
+# Disable husky for Docker builds
+RUN npm set-script prepare ""
+RUN npm ci --quiet
+
+COPY . ./
+RUN npm run build-assets
+
+# Migrator stage
+FROM base as migrator
+CMD npm run migrate
+
+# Scheduler stage
+FROM base as scheduler
+CMD npm run schedule-dev
+
+# API stage
+FROM base as api
+EXPOSE 3001
+EXPOSE 3012
+
+CMD npm run dev 2>&1 | tee /logs/log.txt
+```
+
+This multi-stage build creates separate containers for different purposes:
+
+- **migrator** — Runs database migrations
+- **scheduler** — Runs scheduled jobs
+- **api** — Main API server
+
+<Tip>
+Use the development Dockerfile with Docker Compose to run all services together. The multi-stage approach allows you to target specific stages with `--target`.
+</Tip>
+
+### Building specific stages
+
+Build only the API stage:
+
+```bash
+docker build --target api -f Dockerfile.dev -t my-app:api .
+```
+
+Build the migrator:
+
+```bash
+docker build --target migrator -f Dockerfile.dev -t my-app:migrator .
+```
+
+## Docker Compose example
+
+Here's a complete `docker-compose.yml` for running Hive with all dependencies:
+
+```yaml docker-compose.yml
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:5.0
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=myapp
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      target: api
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - APP_ENV=development
+      - MONGODB_URI=mongodb://mongodb:27017/myapp
+      - REDIS_URI=redis://redis:6379
+      - PORT=3001
+      - HIVE_SRC=/app/src
+    volumes:
+      - ./src:/app/src
+      - ./logs:/logs
+    depends_on:
+      - mongodb
+      - redis
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      target: scheduler
+    environment:
+      - NODE_ENV=development
+      - APP_ENV=development
+      - MONGODB_URI=mongodb://mongodb:27017/myapp
+      - REDIS_URI=redis://redis:6379
+      - HIVE_SRC=/app/src
+    volumes:
+      - ./src:/app/src
+    depends_on:
+      - mongodb
+      - redis
+
+volumes:
+  mongodb_data:
+  redis_data:
+```
+
+Start all services:
+
+```bash
+docker-compose up -d
+```
+
+## Kubernetes deployment
+
+Hive includes Kubernetes deployment templates using Helm charts. The templates are located in `starter/deploy/api/templates/`.
+
+### Deployment template
+
+The Kubernetes deployment template (`deployment.yaml`):
+
+```yaml
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: {{ .Values.service }}
+  labels:
+    app: {{ .Values.service }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Values.service }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.service }}
+    spec:
+      restartPolicy: Always
+      containers:
+        - name: {{ .Values.service }}
+          image: {{ .Values.containerRegistry }}:{{ .Values.imagesVersion }}
+          env:
+            - name: PROJECT_ID
+              value: {{ .Values.projectId }}
+            {{- range .Values.env }}
+            - name: {{ .name }}
+              value: {{ .value }}
+            {{- end }}
+          imagePullPolicy: Always
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.port }}
+            initialDelaySeconds: 300
+            periodSeconds: 10
+          ports:
+            - containerPort: {{ .Values.port }}
+              protocol: TCP
+      nodeSelector:
+        doks.digitalocean.com/node-pool: {{ .Values.nodePool }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+```
+
+### Helm values
+
+Example `staging.yaml` configuration:
+
+```yaml
+nodePool: pool-app
+containerRegistry: paralect/hive-api
+port: 3001
+```
+
+### Deploying with Helm
+
+<Steps>
+  <Step title="Build and push your image">
+    ```bash
+    docker build -f Dockerfile.prod -t myregistry/my-app:v1.0.0 .
+    docker push myregistry/my-app:v1.0.0
+    ```
+  </Step>
+  
+  <Step title="Update Helm values">
+    Create a `values.yaml` file:
+    
+    ```yaml values.yaml
+    service: my-hive-api
+    containerRegistry: myregistry/my-app
+    imagesVersion: v1.0.0
+    port: 3001
+    nodePool: default-pool
+    projectId: my-project-123
+    env:
+      - name: MONGODB_URI
+        value: mongodb://mongo-service:27017/myapp
+      - name: REDIS_URI
+        value: redis://redis-service:6379
+      - name: APP_ENV
+        value: production
+    ```
+  </Step>
+  
+  <Step title="Deploy with Helm">
+    ```bash
+    helm install my-hive-app ./deploy/api -f values.yaml
+    ```
+  </Step>
+</Steps>
+
+<Note>
+The deployment includes a liveness probe that checks the `/health` endpoint. The probe has a 300-second initial delay to allow the application to start up.
+</Note>
+
+## Image optimization tips
+
+### Reduce image size
+
+1. **Use .dockerignore** — Hive includes a `.dockerignore` file that excludes `node_modules`
+2. **Multi-stage builds** — Only copy necessary files to the final stage
+3. **Alpine base image** — Already uses the minimal Alpine Linux distribution
+
+### Security best practices
+
+<AccordionGroup>
+  <Accordion title="Don't build secrets into images">
+    Use environment variables at runtime instead of copying `.env` files into the image. Use Docker secrets or your orchestration platform's secret management.
+  </Accordion>
+  
+  <Accordion title="Run as non-root user">
+    Consider adding a non-root user to your Dockerfile:
+    
+    ```dockerfile
+    RUN addgroup -g 1001 -S nodejs
+    RUN adduser -S nodejs -u 1001
+    USER nodejs
+    ```
+  </Accordion>
+  
+  <Accordion title="Keep base images updated">
+    Regularly update the Node.js base image to get security patches. The current version uses `node:16.13.1-alpine3.13`.
+  </Accordion>
+  
+  <Accordion title="Scan for vulnerabilities">
+    Use tools like `docker scan` or Snyk to check for vulnerabilities:
+    
+    ```bash
+    docker scan my-hive-app:latest
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Logging in containers
+
+Hive logs to both stdout and `/project/logs/log.txt` in containers:
+
+```bash
+CMD npm start 2>&1 | tee /project/logs/log.txt
+```
+
+This allows you to:
+- View logs with `docker logs <container>`
+- Mount a volume to persist logs
+- Configure external log aggregation
+
+To mount logs externally:
+
+```bash
+docker run -v $(pwd)/logs:/project/logs my-hive-app:latest
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="npm install fails during build">
+    Some packages require Python and build tools. The Dockerfiles include `python3 py3-pip` to handle this. If you encounter issues, you may need to add additional build dependencies:
+    
+    ```dockerfile
+    RUN apk add --no-cache python3 py3-pip make g++
+    ```
+  </Accordion>
+  
+  <Accordion title="Platform compatibility issues">
+    If building on M1/M2 Mac for deployment on x86_64, use the platform flag:
+    
+    ```bash
+    docker build --platform linux/amd64 -t my-app .
+    ```
+  </Accordion>
+  
+  <Accordion title="Container exits immediately">
+    Check logs to see the error:
+    
+    ```bash
+    docker logs <container-id>
+    ```
+    
+    Common issues:
+    - Missing `MONGODB_URI` or `REDIS_URI` environment variables
+    - Database not accessible from container
+    - Port already in use
+  </Accordion>
+  
+  <Accordion title="Health check failing">
+    The Kubernetes deployment has a 300-second initial delay for the liveness probe. For Docker Compose, you may need to add a health check:
+    
+    ```yaml
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Environment variables" icon="key" href="/deployment/environment-variables">
+    Configure your application with environment variables
+  </Card>
+  <Card title="Deployment overview" icon="rocket" href="/deployment/overview">
+    Learn about other deployment options
+  </Card>
+</CardGroup>

@@ -1,0 +1,162 @@
+---
+title: Deployment overview
+description: Learn about deployment options for Hive applications including local development, Docker, and production environments
+---
+
+Hive applications can be deployed in multiple ways depending on your needs. The framework is designed to be flexible and work with modern deployment platforms while maintaining simplicity.
+
+## Deployment methods
+
+Hive supports several deployment approaches:
+
+<CardGroup cols={2}>
+  <Card title="Local development" icon="laptop-code">
+    Run your application locally using the Hive CLI for rapid development and testing.
+  </Card>
+  <Card title="Docker containers" icon="docker">
+    Deploy using Docker with production-optimized containers for any cloud platform.
+  </Card>
+  <Card title="Kubernetes" icon="dharmachakra">
+    Scale your application with Kubernetes using built-in Helm charts and deployment templates.
+  </Card>
+  <Card title="Platform-as-a-Service" icon="cloud">
+    Deploy to platforms like Heroku, Railway, or Render with minimal configuration.
+  </Card>
+</CardGroup>
+
+## Development workflow
+
+The typical Hive deployment workflow follows these steps:
+
+<Steps>
+  <Step title="Local development">
+    Start your application locally using the Hive CLI:
+    
+    ```bash
+    hive run ./src
+    ```
+    
+    This copies the framework to `.hive/` and starts the development server with hot reload enabled.
+  </Step>
+  
+  <Step title="Prepare for production">
+    Generate the production build:
+    
+    ```bash
+    hive prepare ./src
+    ```
+    
+    This merges your source code with the framework in the `.hive/` directory, ready for deployment.
+  </Step>
+  
+  <Step title="Build Docker image">
+    Build a production-ready Docker image:
+    
+    ```bash
+    docker build -f Dockerfile.prod -t my-app:latest .
+    ```
+  </Step>
+  
+  <Step title="Deploy to your platform">
+    Push and deploy your container to your chosen platform (Kubernetes, cloud providers, etc.).
+  </Step>
+</Steps>
+
+## Architecture considerations
+
+### Framework structure
+
+Hive uses a unique architecture where the framework code lives in `.hive/` and your application code lives in `src/`. This separation means:
+
+- **User code** (`src/`) — Your resources, endpoints, handlers, and configuration
+- **Framework code** (`.hive/`) — Auto-generated from the `starter/` directory, never edited manually
+- **Runtime merging** — The framework reads from `HIVE_SRC` environment variable to merge your code at runtime
+
+<Note>
+The `.hive/` directory should never be edited manually. It's regenerated each time you run `hive run` or `hive prepare`.
+</Note>
+
+### Required services
+
+Your Hive application requires these external services to run:
+
+| Service | Purpose | Required |
+|---------|---------|----------|
+| MongoDB | Primary database | Yes |
+| Redis | Caching, pub/sub, and real-time features | Yes |
+| SMTP server | Email sending (optional) | No |
+
+## Environment-based configuration
+
+Hive supports different environments through the `APP_ENV` variable:
+
+```javascript
+const env = process.env.APP_ENV || "development";
+```
+
+You can create environment-specific configuration in `src/app-config/`:
+
+- `.env` — Base environment variables
+- `.env.app` — Application-specific overrides
+
+The framework automatically loads configuration from both the framework and your application directories.
+
+<Tip>
+Use `APP_ENV=production` for production deployments and `APP_ENV=development` for local development. This controls various framework behaviors including error handling and logging.
+</Tip>
+
+## Port configuration
+
+By default, Hive listens on port 3001. You can customize this:
+
+```bash
+PORT=8080 hive run ./src
+```
+
+Or set it in your environment variables:
+
+```bash .env
+PORT=3001
+```
+
+The application exposes a `/health` endpoint for health checks at `src/resources/health/endpoints/get.js:51`.
+
+## Production checklist
+
+Before deploying to production, ensure:
+
+<AccordionGroup>
+  <Accordion title="Environment variables are configured">
+    Set all required environment variables including `MONGODB_URI`, `REDIS_URI`, and `APP_ENV=production`.
+  </Accordion>
+  
+  <Accordion title="Dependencies are production-ready">
+    The production Dockerfile uses `npm ci --only=production` to install only production dependencies.
+  </Accordion>
+  
+  <Accordion title="Logs are configured">
+    Hive writes logs to `/project/logs/log.txt`. Ensure this directory exists and is writable, or configure a custom logger in `src/app-config/logger.js`.
+  </Accordion>
+  
+  <Accordion title="Database indexes are created">
+    Run migrations before deploying:
+    ```bash
+    npm run migrate
+    ```
+  </Accordion>
+  
+  <Accordion title="Security is configured">
+    The framework includes helmet.js for security headers and CORS configuration. Review `src/app.js:38-39` for default settings.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Docker deployment" icon="docker" href="/deployment/docker">
+    Learn how to deploy Hive with Docker using the included Dockerfiles
+  </Card>
+  <Card title="Environment variables" icon="key" href="/deployment/environment-variables">
+    Complete reference of all environment variables used by Hive
+  </Card>
+</CardGroup>

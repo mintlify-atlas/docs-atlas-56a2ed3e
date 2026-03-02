@@ -1,0 +1,390 @@
+---
+title: Database utilities
+description: Helper functions for working with MongoDB schemas, services, and event-driven updates
+---
+
+Hive provides database utilities for common patterns like conditional update handlers, schema management, and pagination.
+
+## Overview
+
+Database utilities include:
+- Conditional update handlers with `ifUpdated()`
+- Built-in pagination schema
+- Base database schema with timestamps
+- Schema discovery and resource loading
+- Event-driven document lifecycle hooks
+
+## ifUpdated()
+
+Execute handlers only when specific fields change. Useful for side effects like sending notifications or updating related documents.
+
+### Signature
+
+```javascript
+import ifUpdated from 'helpers/db/ifUpdated';
+
+const handler = ifUpdated(fieldNames, callback);
+```
+
+<ParamField path="fieldNames" type="string[]" required>
+  Array of field names to watch for changes.
+</ParamField>
+
+<ParamField path="callback" type="function" required>
+  Function called when any watched field changes. Receives `{ doc, prevDoc }`.
+</ParamField>
+
+**Returns:** An async handler function compatible with database event listeners.
+
+### Basic usage
+
+```javascript
+import ifUpdated from 'helpers/db/ifUpdated';
+import db from 'db';
+import logger from 'logger';
+
+// Log when user email or role changes
+db.services.users.on('updated', 
+  ifUpdated(['email', 'role'], ({ doc, prevDoc }) => {
+    logger.info('User credentials updated', {
+      userId: doc._id,
+      oldEmail: prevDoc.email,
+      newEmail: doc.email,
+      oldRole: prevDoc.role,
+      newRole: doc.role,
+    });
+  })
+);
+```
+
+### Send notification on status change
+
+```javascript
+import ifUpdated from 'helpers/db/ifUpdated';
+import db from 'db';
+import { sendEmail } from '../emails';
+
+db.services.orders.on('updated',
+  ifUpdated(['status'], async ({ doc, prevDoc }) => {
+    if (doc.status === 'shipped') {
+      await sendEmail({
+        to: doc.userEmail,
+        template: 'order-shipped',
+        data: {
+          orderNumber: doc.orderNumber,
+          trackingNumber: doc.trackingNumber,
+        },
+      });
+    }
+  })
+);
+```
+
+### Update related documents
+
+```javascript
+import ifUpdated from 'helpers/db/ifUpdated';
+import db from 'db';
+
+// Sync user name to all their posts
+db.services.users.on('updated',
+  ifUpdated(['firstName', 'lastName'], async ({ doc }) => {
+    await db.services.posts.updateMany(
+      { 'author._id': doc._id },
+      (post) => {
+        post.author.firstName = doc.firstName;
+        post.author.lastName = doc.lastName;
+        return post;
+      }
+    );
+  })
+);
+```
+
+<Note>
+The callback only executes if at least one watched field has changed. Fields are compared using Lodash's `isEqual()` for deep equality.
+</Note>
+
+### Multiple field watchers
+
+```javascript
+import ifUpdated from 'helpers/db/ifUpdated';
+import db from 'db';
+
+// Watch email changes
+db.services.users.on('updated',
+  ifUpdated(['email'], async ({ doc }) => {
+    await sendVerificationEmail(doc.email);
+  })
+);
+
+// Watch subscription changes (independent handler)
+db.services.users.on('updated',
+  ifUpdated(['subscriptionTier'], async ({ doc, prevDoc }) => {
+    await handleSubscriptionChange(doc, prevDoc);
+  })
+);
+```
+
+<Tip>
+You can attach multiple `ifUpdated()` handlers to the same event. Each handler is independent and only runs when its specific fields change.
+</Tip>
+
+## Pagination schema
+
+Built-in Zod schema for consistent pagination across endpoints.
+
+```javascript
+import { paginationSchema } from 'helpers/schema/pagination.schema';
+
+// Use in endpoint schemas
+export const querySchema = paginationSchema.extend({
+  categoryId: z.string().optional(),
+});
+```
+
+### Schema fields
+
+<ParamField path="page" type="number" default="1">
+  Current page number (1-based).
+</ParamField>
+
+<ParamField path="perPage" type="number" default="10">
+  Number of results per page.
+</ParamField>
+
+<ParamField path="searchValue" type="string">
+  Optional search query string.
+</ParamField>
+
+<ParamField path="sort.createdOn" type="'asc' | 'desc'" default="'asc'">
+  Sort order for creation date.
+</ParamField>
+
+### Usage in endpoints
+
+<CodeGroup>
+```javascript Endpoint schema
+import { paginationSchema } from 'helpers/schema/pagination.schema';
+import { z } from 'zod';
+
+export const querySchema = paginationSchema.extend({
+  status: z.enum(['active', 'inactive']).optional(),
+  categoryId: z.string().optional(),
+});
+```
+
+```javascript Handler
+export default async (ctx) => {
+  const { page, perPage, searchValue, status } = ctx.validatedData.query;
+  
+  const query = {};
+  if (status) query.status = status;
+  if (searchValue) query.name = { $regex: searchValue, $options: 'i' };
+  
+  const { results, count } = await db.services.products.find(query, {
+    page,
+    perPage,
+    sort: { createdOn: -1 },
+  });
+  
+  ctx.body = {
+    results,
+    count,
+    page,
+    perPage,
+    totalPages: Math.ceil(count / perPage),
+  };
+};
+```
+</CodeGroup>
+
+## Base database schema
+
+Standard fields included in all documents.
+
+```javascript
+import baseDbSchema from 'helpers/schema/db.schema';
+import { z } from 'zod';
+
+// Extend for your resources
+export default baseDbSchema.extend({
+  email: z.string().email(),
+  firstName: z.string(),
+  lastName: z.string(),
+});
+```
+
+### Base schema fields
+
+<ParamField path="_id" type="string" required>
+  MongoDB document ID (auto-generated).
+</ParamField>
+
+<ParamField path="createdOn" type="Date" default="new Date()">
+  Document creation timestamp (auto-generated).
+</ParamField>
+
+<ParamField path="updatedOn" type="Date" default="new Date()">
+  Last update timestamp (auto-updated on changes).
+</ParamField>
+
+<Note>
+Timestamp fields are automatically managed by the database service. You don't need to set them manually.
+</Note>
+
+## Schema discovery
+
+Hive automatically discovers and loads schemas from your resources.
+
+### getSchemas()
+
+Returns all schema files from framework and app resources.
+
+```javascript
+import getSchemas from 'helpers/getSchemas';
+
+const schemas = await getSchemas();
+// [
+//   {
+//     name: 'user',
+//     file: '/path/to/users/user.schema.js',
+//     resourceName: 'users',
+//     isHive: false
+//   },
+//   ...
+// ]
+```
+
+### getResources()
+
+Returns all resource directories.
+
+```javascript
+import getResources from 'helpers/getResources';
+
+const resources = await getResources();
+// [
+//   { name: 'users' },
+//   { name: 'posts' },
+//   { name: 'orders' },
+// ]
+```
+
+<Tip>
+These helpers are used internally by Hive's initialization system. You rarely need to call them directly.
+</Tip>
+
+## Database events
+
+All services emit lifecycle events you can listen to.
+
+### Available events
+
+<ParamField path="created" type="event">
+  Fired after a document is created. Receives `{ doc }`.
+</ParamField>
+
+<ParamField path="updated" type="event">
+  Fired after a document is updated. Receives `{ doc, prevDoc }`.
+</ParamField>
+
+<ParamField path="removed" type="event">
+  Fired after a document is removed. Receives `{ doc }`.
+</ParamField>
+
+### Event listener patterns
+
+```javascript
+import db from 'db';
+
+// Listen to created events
+db.services.users.on('created', ({ doc }) => {
+  console.log('New user:', doc._id);
+});
+
+// Listen to updated events
+db.services.users.on('updated', ({ doc, prevDoc }) => {
+  console.log('User updated:', doc._id);
+  console.log('Changes:', getChanges(doc, prevDoc));
+});
+
+// Listen to removed events
+db.services.users.on('removed', ({ doc }) => {
+  console.log('User deleted:', doc._id);
+});
+```
+
+### One-time listeners
+
+```javascript
+import db from 'db';
+
+// Listen once
+db.services.users.once('created', ({ doc }) => {
+  console.log('First user created:', doc._id);
+});
+```
+
+## Best practices
+
+### Combine ifUpdated with specific logic
+
+```javascript
+import ifUpdated from 'helpers/db/ifUpdated';
+import db from 'db';
+
+// Only send email when status becomes 'approved'
+db.services.applications.on('updated',
+  ifUpdated(['status'], async ({ doc, prevDoc }) => {
+    if (prevDoc.status !== 'approved' && doc.status === 'approved') {
+      await sendApprovalEmail(doc);
+    }
+  })
+);
+```
+
+### Use pagination consistently
+
+```javascript
+import { paginationSchema } from 'helpers/schema/pagination.schema';
+
+// Standard pagination response format
+const buildPaginatedResponse = (results, count, page, perPage) => ({
+  results,
+  count,
+  page,
+  perPage,
+  totalPages: Math.ceil(count / perPage),
+  hasMore: page * perPage < count,
+});
+
+export default async (ctx) => {
+  const { page, perPage, searchValue } = ctx.validatedData.query;
+  const { results, count } = await db.services.products.find({ /* query */ }, {
+    page,
+    perPage,
+  });
+  
+  ctx.body = buildPaginatedResponse(results, count, page, perPage);
+};
+```
+
+### Extend base schema for consistency
+
+```javascript
+import baseDbSchema from 'helpers/schema/db.schema';
+import { z } from 'zod';
+
+// All your schemas get _id, createdOn, updatedOn
+export default baseDbSchema.extend({
+  title: z.string().min(1),
+  content: z.string(),
+  authorId: z.string(),
+  status: z.enum(['draft', 'published']),
+});
+```
+
+<Warning>
+Avoid manually setting `createdOn` or `updatedOn`. The database service manages these fields automatically.
+</Warning>

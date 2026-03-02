@@ -1,0 +1,180 @@
+---
+title: Creating resources
+description: Learn how to create new resources in Hive with schemas, endpoints, handlers, and methods
+---
+
+Resources are the building blocks of your Hive application. Each resource represents a feature or entity with its own data model, API endpoints, event handlers, and business logic.
+
+## Resource structure
+
+Every resource follows a predictable folder structure:
+
+```
+src/resources/{name}/
+├── {name}.schema.js      # Data model (required)
+├── endpoints/            # API routes
+│   ├── create.js
+│   ├── list.js
+│   └── update.js
+├── handlers/             # Event listeners
+│   └── onCreate.js
+└── methods/              # Shared business logic
+    └── helper.js
+```
+
+## Creating a schema
+
+The schema is the only required file. It defines the data structure and automatically creates a MongoDB collection and service.
+
+<Steps>
+  <Step title="Create the schema file">
+    Create `src/resources/{name}/{name}.schema.js`:
+
+    ```javascript src/resources/tasks/tasks.schema.js
+    import { z } from 'zod';
+    import dbSchema from 'helpers/schema/db.schema';
+
+    const tasks = dbSchema.extend({
+      title: z.coerce.string().nullable().optional(),
+      status: z.coerce.string().default('pending'),
+      assignee: z.object({
+        _id: z.string(),
+        fullName: z.coerce.string().nullable().optional(),
+        avatarUrl: z.coerce.string().nullable().optional(),
+      }).nullable().optional(),
+      dueOn: z.coerce.date().nullable().optional(),
+    });
+
+    export default tasks;
+    export const secureFields = ['internalNotes'];
+    ```
+  </Step>
+
+  <Step title="Access the service">
+    Hive automatically generates a database service:
+
+    ```javascript
+    import db from 'db';
+
+    const tasksService = db.services.tasks;
+
+    // Now you can use CRUD operations
+    const task = await tasksService.create({ title: 'New task' });
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  Every schema automatically includes `_id`, `createdOn`, and `updatedOn` fields from the base `dbSchema`.
+</Note>
+
+## Schema field types
+
+<AccordionGroup>
+  <Accordion title="Simple fields">
+    ```javascript
+    title: z.coerce.string().nullable().optional(),
+    count: z.coerce.number().nullable().optional(),
+    isActive: z.coerce.boolean().nullable().optional(),
+    dueOn: z.coerce.date().nullable().optional(),
+    status: z.coerce.string().default('pending'),
+    ```
+  </Accordion>
+
+  <Accordion title="Embedded documents">
+    Reference fields that auto-sync when the source document changes:
+
+    ```javascript
+    user: z.object({
+      _id: z.string(),
+      fullName: z.coerce.string().nullable().optional(),
+      email: z.string().email(),
+    }).nullable().optional(),
+    ```
+
+    See [Database operations](/guides/database-operations) for auto-sync setup.
+  </Accordion>
+
+  <Accordion title="Arrays">
+    ```javascript
+    tags: z.array(z.string()).nullable().optional(),
+
+    managers: z.array(
+      z.object({
+        _id: z.string(),
+        fullName: z.coerce.string().nullable().optional(),
+      })
+    ).nullable().optional(),
+    ```
+  </Accordion>
+
+  <Accordion title="Flexible objects">
+    ```javascript
+    metadata: z.object({}).passthrough().nullable().optional(),
+    oauth: z.object({
+      google: z.object({}),
+    }).optional(),
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Secure fields
+
+Fields in the `secureFields` array are automatically excluded from API responses:
+
+```javascript src/resources/users/users.schema.js
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const users = dbSchema.extend({
+  email: z.string().email(),
+  fullName: z.string(),
+  password: z.string(),
+  avatarUrl: z.string().url().optional(),
+});
+
+export default users;
+export const secureFields = ['password'];
+```
+
+<Warning>
+  Always add sensitive fields like `password`, API keys, and tokens to `secureFields`.
+</Warning>
+
+## Real-world example
+
+Here's a complete resource from the Hive starter:
+
+```javascript src/resources/users/users.schema.js
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const users = dbSchema.extend({
+  email: z.string().email(),
+  fullName: z.string(),
+  avatarUrl: z.string().url().optional(),
+  password: z.string(),
+  oauth: z.object({
+    google: z.object({}),
+  }).optional(),
+});
+
+export default users;
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Build endpoints" icon="route" href="/guides/building-endpoints">
+    Create API routes for your resource
+  </Card>
+  <Card title="Database operations" icon="database" href="/guides/database-operations">
+    Learn CRUD operations with the generated service
+  </Card>
+  <Card title="Event handlers" icon="bolt" href="/guides/event-handlers">
+    React to database changes automatically
+  </Card>
+  <Card title="Methods" icon="code" href="/guides/building-endpoints">
+    Add shared business logic
+  </Card>
+</CardGroup>

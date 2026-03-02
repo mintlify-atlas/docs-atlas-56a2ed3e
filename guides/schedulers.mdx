@@ -1,0 +1,530 @@
+---
+title: Scheduled jobs
+description: Run recurring tasks with cron-based schedulers
+---
+
+Hive includes a cron-based scheduler for running tasks on a schedule. Use it for cleanup jobs, reports, reminders, data synchronization, and any recurring task.
+
+## How it works
+
+Schedulers are files that export a cron expression and a handler function. Hive automatically registers them on startup.
+
+```javascript
+export const cron = '0 9 * * *'; // Daily at 9 AM
+
+export const handler = async () => {
+  // Your task here
+};
+```
+
+## Creating schedulers
+
+Schedulers live in `src/scheduler/handlers/`:
+
+```javascript src/scheduler/handlers/sendDailyReport.js
+import moment from 'moment';
+import db from 'db';
+import emailService from 'services/emailService';
+
+const taskService = db.services.tasks;
+const userService = db.services.users;
+
+export const cron = "0 9 * * *"; // Daily at 9 AM
+
+export const handler = async () => {
+  const yesterday = moment().add(-1, "day").toDate();
+
+  // Get all users
+  const { results: users } = await userService.find({});
+
+  for (const user of users) {
+    // Get tasks completed yesterday
+    const { results: tasks } = await taskService.find({
+      'user._id': user._id,
+      status: 'completed',
+      completedAt: { $gte: yesterday },
+    });
+
+    if (tasks.length > 0) {
+      await emailService.sendDailyReport({
+        to: user.email,
+        tasks,
+        date: yesterday,
+      });
+    }
+  }
+};
+```
+
+<Note>
+  Scheduler files are automatically loaded. Just create the file and it will run on the specified schedule.
+</Note>
+
+## Scheduler implementation
+
+Here's how Hive registers schedulers:
+
+```javascript src/scheduler.js
+import path from 'path';
+import fs from 'fs';
+import moment from 'moment';
+import schedule from 'node-schedule';
+import requireDir from 'require-dir';
+
+export default () => {
+  const paths = [path.resolve(__dirname, './scheduler/handlers')];
+  if (process.env.HIVE_SRC) {
+    paths.push(path.resolve(process.env.HIVE_SRC, './scheduler/handlers'))
+  }
+
+  paths.forEach((pathName) => {
+    if (fs.existsSync(pathName)) {
+      requireDir(pathName, {
+        mapValue: (handler, handlerName) => {
+          console.log(
+            `[scheduler] Registering handler ${handlerName} with cron ${handler.cron}`
+          );
+
+          schedule.scheduleJob(handler.cron, () => {
+            console.log(
+              `[scheduler] ${moment().format()} executing ${handlerName} with cron ${handler.cron}`
+            );
+            handler.handler();
+          });
+        },
+      });
+    }
+  });
+}
+```
+
+## Cron expressions
+
+Cron format: `second minute hour day-of-month month day-of-week`
+
+<AccordionGroup>
+  <Accordion title="Every minute">
+    ```javascript
+    export const cron = "* * * * *";
+    ```
+  </Accordion>
+
+  <Accordion title="Every hour">
+    ```javascript
+    export const cron = "0 * * * *";
+    ```
+  </Accordion>
+
+  <Accordion title="Daily at specific time">
+    ```javascript
+    export const cron = "0 9 * * *"; // 9 AM
+    export const cron = "0 0 * * *"; // Midnight
+    export const cron = "30 14 * * *"; // 2:30 PM
+    ```
+  </Accordion>
+
+  <Accordion title="Weekly">
+    ```javascript
+    export const cron = "0 9 * * 1"; // Mondays at 9 AM
+    export const cron = "0 0 * * 0"; // Sundays at midnight
+    ```
+  </Accordion>
+
+  <Accordion title="Monthly">
+    ```javascript
+    export const cron = "0 0 1 * *"; // First day of month at midnight
+    export const cron = "0 9 15 * *"; // 15th of month at 9 AM
+    ```
+  </Accordion>
+
+  <Accordion title="Specific intervals">
+    ```javascript
+    export const cron = "*/5 * * * *"; // Every 5 minutes
+    export const cron = "0 */2 * * *"; // Every 2 hours
+    export const cron = "0 0 */3 * *"; // Every 3 days
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Common scheduler patterns
+
+<AccordionGroup>
+  <Accordion title="Cleanup old records">
+    ```javascript src/scheduler/handlers/cleanupOldTokens.js
+    import db from 'db';
+    import moment from 'moment';
+
+    const tokenService = db.services.tokens;
+
+    export const cron = "0 0 * * *"; // Daily at midnight
+
+    export const handler = async () => {
+      const thirtyDaysAgo = moment().add(-30, 'days').toDate();
+
+      const removed = await tokenService.remove({
+        createdOn: { $lt: thirtyDaysAgo },
+      });
+
+      console.log(`Cleaned up ${removed.results.length} old tokens`);
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Mark overdue items">
+    ```javascript src/scheduler/handlers/markOverdueTasks.js
+    import db from 'db';
+
+    const taskService = db.services.tasks;
+
+    export const cron = "0 * * * *"; // Every hour
+
+    export const handler = async () => {
+      await taskService.updateMany(
+        {
+          isPaid: { $ne: true },
+          dueOn: { $lt: new Date() },
+          status: { $ne: 'overdue' },
+        },
+        (doc) => ({ ...doc, status: 'overdue' })
+      );
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Send reminders">
+    ```javascript src/scheduler/handlers/sendTaskReminders.js
+    import db from 'db';
+    import moment from 'moment';
+    import emailQueue from 'services/emailQueue';
+
+    const taskService = db.services.tasks;
+
+    export const cron = "0 9 * * *"; // Daily at 9 AM
+
+    export const handler = async () => {
+      const tomorrow = moment().add(1, 'day').startOf('day').toDate();
+      const endOfTomorrow = moment().add(1, 'day').endOf('day').toDate();
+
+      // Find tasks due tomorrow
+      const { results: tasks } = await taskService.find({
+        dueOn: {
+          $gte: tomorrow,
+          $lt: endOfTomorrow,
+        },
+        status: { $ne: 'completed' },
+      });
+
+      for (const task of tasks) {
+        if (task.assignee) {
+          await emailQueue.add('task-reminder', {
+            email: task.assignee.email,
+            taskTitle: task.title,
+            dueOn: task.dueOn,
+          });
+        }
+      }
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Generate reports">
+    ```javascript src/scheduler/handlers/generateWeeklyReport.js
+    import db from 'db';
+    import moment from 'moment';
+    import reportQueue from 'services/reportQueue';
+
+    const projectService = db.services.projects;
+
+    export const cron = "0 9 * * 1"; // Mondays at 9 AM
+
+    export const handler = async () => {
+      const lastWeek = moment().add(-7, 'days').toDate();
+
+      // Get all active projects
+      const { results: projects } = await projectService.find({
+        status: 'active',
+      });
+
+      for (const project of projects) {
+        await reportQueue.add('weekly-report', {
+          projectId: project._id,
+          startDate: lastWeek,
+          endDate: new Date(),
+        });
+      }
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Sync external data">
+    ```javascript src/scheduler/handlers/syncExternalAPI.js
+    import db from 'db';
+    import axios from 'axios';
+
+    const dataService = db.services.externalData;
+
+    export const cron = "0 */6 * * *"; // Every 6 hours
+
+    export const handler = async () => {
+      try {
+        const response = await axios.get('https://api.example.com/data');
+
+        for (const item of response.data) {
+          const existing = await dataService.findOne({
+            externalId: item.id,
+          });
+
+          if (existing) {
+            await dataService.updateOne(
+              { _id: existing._id },
+              (doc) => ({ ...doc, ...item, syncedAt: new Date() })
+            );
+          } else {
+            await dataService.create({
+              ...item,
+              externalId: item.id,
+              syncedAt: new Date(),
+            });
+          }
+        }
+
+        console.log(`Synced ${response.data.length} items`);
+      } catch (error) {
+        console.error('Sync failed:', error);
+      }
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Backup database">
+    ```javascript src/scheduler/handlers/backupDatabase.js
+    import { exec } from 'child_process';
+    import util from 'util';
+    import moment from 'moment';
+
+    const execPromise = util.promisify(exec);
+
+    export const cron = "0 2 * * *"; // Daily at 2 AM
+
+    export const handler = async () => {
+      const date = moment().format('YYYY-MM-DD');
+      const filename = `backup-${date}.gz`;
+
+      try {
+        await execPromise(
+          `mongodump --uri="${process.env.MONGO_URI}" --archive=${filename} --gzip`
+        );
+
+        // Upload to S3 or other storage
+        await uploadBackup(filename);
+
+        console.log(`Backup created: ${filename}`);
+      } catch (error) {
+        console.error('Backup failed:', error);
+      }
+    };
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Testing schedulers
+
+You can manually trigger schedulers for testing:
+
+```javascript src/resources/_dev/endpoints/triggerScheduler.js
+import sendDailyReport from 'scheduler/handlers/sendDailyReport';
+
+export const handler = async (ctx) => {
+  const { schedulerName } = ctx.params;
+
+  // Map of available schedulers
+  const schedulers = {
+    'daily-report': sendDailyReport,
+  };
+
+  const scheduler = schedulers[schedulerName];
+
+  if (!scheduler) {
+    ctx.throw(404, 'Scheduler not found');
+  }
+
+  await scheduler.handler();
+
+  return { success: true };
+};
+
+export const endpoint = {
+  method: 'POST',
+  url: '/trigger/:schedulerName',
+};
+```
+
+The Hive starter includes this endpoint:
+
+```javascript src/resources/_dev/endpoints/triggerSchedulerHandler.js
+// Trigger scheduler for testing
+```
+
+## Production considerations
+
+<AccordionGroup>
+  <Accordion title="Run on single instance">
+    In multi-instance deployments, ensure schedulers run only once:
+
+    ```javascript src/scheduler.js
+    import os from 'os';
+
+    export default () => {
+      // Only run on primary instance
+      if (process.env.NODE_APP_INSTANCE !== '0') {
+        console.log('Skipping scheduler on worker instance');
+        return;
+      }
+
+      // Register schedulers...
+    };
+    ```
+
+    Or use a distributed lock with Redis:
+
+    ```javascript
+    import { createClient } from 'redis';
+
+    const redis = createClient({ url: process.env.REDIS_URL });
+
+    export const handler = async () => {
+      const lockKey = 'scheduler:daily-report';
+      const lock = await redis.set(lockKey, 'locked', {
+        NX: true,
+        EX: 60, // Lock expires in 60 seconds
+      });
+
+      if (!lock) {
+        console.log('Another instance is running this job');
+        return;
+      }
+
+      try {
+        // Run your task
+      } finally {
+        await redis.del(lockKey);
+      }
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Handle errors gracefully">
+    ```javascript
+    export const handler = async () => {
+      try {
+        await performTask();
+      } catch (error) {
+        console.error('Scheduler failed:', error);
+
+        // Log to error tracking service
+        await errorTracker.capture(error);
+
+        // Don't throw - let scheduler continue
+      }
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Monitor execution time">
+    ```javascript
+    export const handler = async () => {
+      const start = Date.now();
+
+      try {
+        await performTask();
+      } finally {
+        const duration = Date.now() - start;
+        console.log(`Scheduler completed in ${duration}ms`);
+
+        // Alert if too slow
+        if (duration > 60000) {
+          await alertService.send({
+            message: `Scheduler took ${duration}ms`,
+          });
+        }
+      }
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Use environment-specific schedules">
+    ```javascript
+    // Development: run every minute for testing
+    // Production: run daily
+    export const cron = process.env.NODE_ENV === 'production'
+      ? "0 9 * * *"
+      : "* * * * *";
+
+    export const handler = async () => {
+      // ...
+    };
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Schedulers vs background jobs
+
+| Use scheduler when... | Use background job when... |
+|----------------------|---------------------------|
+| Task runs on a schedule | Task triggered by user action |
+| Runs at specific time | Runs immediately or with delay |
+| System maintenance | Per-user processing |
+| Reports, cleanup | Emails, notifications |
+
+Often, combine both:
+
+```javascript src/scheduler/handlers/sendDailyDigest.js
+import emailQueue from 'services/emailQueue';
+import db from 'db';
+
+const userService = db.services.users;
+
+export const cron = "0 9 * * *"; // Daily at 9 AM
+
+export const handler = async () => {
+  const { results: users } = await userService.find({});
+
+  // Scheduler queues jobs for each user
+  for (const user of users) {
+    await emailQueue.add('daily-digest', {
+      userId: user._id,
+      email: user.email,
+    });
+  }
+};
+```
+
+## Cron expression reference
+
+```
+┌─────────── second (0-59)
+│ ┌───────── minute (0-59)
+│ │ ┌─────── hour (0-23)
+│ │ │ ┌───── day of month (1-31)
+│ │ │ │ ┌─── month (1-12)
+│ │ │ │ │ ┌─ day of week (0-7) (0 or 7 is Sunday)
+│ │ │ │ │ │
+* * * * * *
+```
+
+Special characters:
+- `*` - Any value
+- `,` - Value list (1,3,5)
+- `-` - Range (1-5)
+- `/` - Step values (*/5 = every 5)
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Background jobs" icon="clock" href="/guides/background-jobs">
+    Process async tasks with BullMQ
+  </Card>
+  <Card title="Event handlers" icon="bolt" href="/guides/event-handlers">
+    React to database changes
+  </Card>
+</CardGroup>

@@ -1,0 +1,384 @@
+---
+title: Building endpoints
+description: Create REST API endpoints with validation, authentication, and middlewares
+---
+
+Endpoints are API routes that handle HTTP requests. In Hive, endpoints are self-contained files with validation, middlewares, and handler logic.
+
+## Endpoint structure
+
+Every endpoint file exports four things:
+
+```javascript src/resources/users/endpoints/getCurrentUser.js
+import { z } from 'zod';
+import isAuthorized from 'middlewares/isAuthorized';
+
+export const handler = async (ctx) => {
+  ctx.body = ctx.state.user;
+};
+
+export const middlewares = [isAuthorized];
+
+export const requestSchema = z.object({});
+
+export const endpoint = {
+  method: "GET",
+  url: "/me",
+};
+```
+
+<Note>
+  The endpoint URL is relative to the resource name. This endpoint becomes `GET /users/me`.
+</Note>
+
+## Handler context
+
+The handler receives a Koa context object with these properties:
+
+| Property | Description | Example |
+|----------|-------------|----------|
+| `ctx.validatedData` | Validated request data (body + query + params) | `ctx.validatedData.email` |
+| `ctx.state.user` | Authenticated user (if using `isAuthorized`) | `ctx.state.user._id` |
+| `ctx.params` | URL parameters | `ctx.params.userId` |
+| `ctx.query` | Query string | `ctx.query.page` |
+| `ctx.request.body` | Raw request body | `ctx.request.body` |
+| `ctx.throw(status, msg)` | Throw HTTP error | `ctx.throw(404, 'Not found')` |
+| `ctx.body` | Set response body | `ctx.body = { result }` |
+
+## Common endpoint patterns
+
+<AccordionGroup>
+  <Accordion title="List with pagination">
+    ```javascript src/resources/tasks/endpoints/list.js
+    import { z } from 'zod';
+    import db from 'db';
+
+    const tasksService = db.services.tasks;
+
+    export const handler = async (ctx) => {
+      const { page, perPage } = ctx.validatedData;
+      const { results, count } = await tasksService.find(
+        {},
+        { page, perPage, sort: '-createdOn' }
+      );
+      return { results, count };
+    };
+
+    export const middlewares = [];
+
+    export const requestSchema = z.object({
+      page: z.coerce.number().default(1),
+      perPage: z.coerce.number().default(20),
+    });
+
+    export const endpoint = {
+      method: 'GET',
+      url: '/',
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Create resource">
+    ```javascript src/resources/tasks/endpoints/create.js
+    import { z } from 'zod';
+    import db from 'db';
+    import isAuthorized from 'middlewares/isAuthorized';
+
+    const tasksService = db.services.tasks;
+
+    export const handler = async (ctx) => {
+      const task = await tasksService.create({
+        ...ctx.validatedData,
+        user: ctx.state.user,
+      });
+      return task;
+    };
+
+    export const middlewares = [isAuthorized];
+
+    export const requestSchema = z.object({
+      title: z.string(),
+      status: z.string().default('pending'),
+      dueOn: z.coerce.date().optional(),
+    });
+
+    export const endpoint = {
+      method: 'POST',
+      url: '/',
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Get by ID">
+    ```javascript src/resources/users/endpoints/getUserProfile.js
+    import { z } from 'zod';
+    import db from 'db';
+
+    const userService = db.services.users;
+
+    export const handler = async (ctx) => {
+      const { userId } = ctx.params;
+      const user = await userService.findOne({ _id: userId });
+      ctx.body = user;
+    };
+
+    export const requestSchema = z.object({
+      userId: z.string(),
+    });
+
+    export const endpoint = {
+      method: "GET",
+      url: "/profile/:userId",
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Update resource">
+    ```javascript src/resources/tasks/endpoints/update.js
+    import { z } from 'zod';
+    import db from 'db';
+    import isAuthorized from 'middlewares/isAuthorized';
+
+    const tasksService = db.services.tasks;
+
+    export const handler = async (ctx) => {
+      const { id, ...updates } = ctx.validatedData;
+      const task = await tasksService.updateOne(
+        { _id: id },
+        (doc) => ({ ...doc, ...updates })
+      );
+      return task;
+    };
+
+    export const middlewares = [isAuthorized];
+
+    export const requestSchema = z.object({
+      id: z.string(),
+      title: z.string().optional(),
+      status: z.string().optional(),
+    });
+
+    export const endpoint = {
+      method: 'PUT',
+      url: '/:id',
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Delete resource">
+    ```javascript src/resources/tasks/endpoints/delete.js
+    import { z } from 'zod';
+    import db from 'db';
+    import isAuthorized from 'middlewares/isAuthorized';
+
+    const tasksService = db.services.tasks;
+
+    export const handler = async (ctx) => {
+      const { id } = ctx.params;
+      await tasksService.remove({ _id: id });
+      return { success: true };
+    };
+
+    export const middlewares = [isAuthorized];
+
+    export const requestSchema = z.object({
+      id: z.string(),
+    });
+
+    export const endpoint = {
+      method: 'DELETE',
+      url: '/:id',
+    };
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Request validation
+
+The `requestSchema` validates all incoming data (body, query params, and URL params):
+
+```javascript
+export const requestSchema = z.object({
+  // URL params
+  userId: z.string(),
+  
+  // Query params
+  page: z.coerce.number().default(1),
+  perPage: z.coerce.number().default(20),
+  
+  // Body params
+  title: z.string(),
+  email: z.string().email(),
+  isActive: z.coerce.boolean().optional(),
+});
+```
+
+<Tip>
+  Always use `z.coerce` for numbers, booleans, and dates to handle query string conversion.
+</Tip>
+
+## Using middlewares
+
+Middlewares run before the handler. You can use built-in middlewares or create custom ones:
+
+<CodeGroup>
+```javascript By name
+export const middlewares = ['allowNoAuth'];
+```
+
+```javascript With arguments
+export const middlewares = [
+  { name: 'shouldExist', args: ['tasks'] }
+];
+```
+
+```javascript Direct import
+import isAuthorized from 'middlewares/isAuthorized';
+import shouldExist from 'middlewares/shouldExist';
+
+export const middlewares = [
+  isAuthorized,
+  shouldExist('tasks')
+];
+```
+</CodeGroup>
+
+### Built-in middlewares
+
+| Middleware | Purpose | Example |
+|------------|---------|----------|
+| `isAuthorized` | Require authentication | Protect user routes |
+| `allowNoAuth` | Allow public access | Public endpoints |
+| `shouldExist` | Verify resource exists | Load task before update |
+| `attachUser` | Attach user to context | Get current user data |
+| `validate` | Validate request data | Auto-applied to all endpoints |
+
+## Public endpoints
+
+By default, endpoints require authentication. To make an endpoint public:
+
+```javascript src/resources/health/endpoints/get.js
+import { render } from '@react-email/render';
+import { MyEmailComponent } from 'emails/compiled/MyEmailComponent';
+import React from 'react';
+
+export const handler = (ctx) => {
+  const emailHtml = render(React.createElement(MyEmailComponent, { name: 'test' }));
+  ctx.body = emailHtml;
+  ctx.status = 200;
+};
+
+export const middlewares = ['allowNoAuth'];
+
+export const endpoint = {
+  method: "GET",
+  url: "/",
+};
+```
+
+## Error handling
+
+Use `ctx.throw()` to return HTTP errors:
+
+```javascript
+export const handler = async (ctx) => {
+  const { userId } = ctx.params;
+  const user = await userService.findOne({ _id: userId });
+  
+  if (!user) {
+    ctx.throw(404, 'User not found');
+  }
+  
+  if (!user.isActive) {
+    ctx.throw(403, 'User account is disabled');
+  }
+  
+  return user;
+};
+```
+
+Validation errors are automatically formatted:
+
+```json
+{
+  "clientErrors": {
+    "email": ["Invalid email"],
+    "password": ["String must contain at least 8 character(s)"]
+  }
+}
+```
+
+## Advanced patterns
+
+<AccordionGroup>
+  <Accordion title="Filtering by current user">
+    ```javascript
+    export const handler = async (ctx) => {
+      const { page, perPage } = ctx.validatedData;
+      return tasksService.find(
+        { 'assignee._id': ctx.state.user._id },
+        { page, perPage }
+      );
+    };
+
+    export const middlewares = [isAuthorized];
+    ```
+  </Accordion>
+
+  <Accordion title="Using shouldExist middleware">
+    The `shouldExist` middleware loads a resource and attaches it to `ctx.state`:
+
+    ```javascript
+    import shouldExist from 'middlewares/shouldExist';
+
+    export const handler = async (ctx) => {
+      // Task is already loaded by shouldExist
+      const task = ctx.state.task;
+      
+      const updated = await tasksService.updateOne(
+        { _id: task._id },
+        (doc) => ({ ...doc, status: 'completed' })
+      );
+      
+      return updated;
+    };
+
+    export const middlewares = [
+      isAuthorized,
+      shouldExist('tasks')
+    ];
+
+    export const requestSchema = z.object({
+      taskId: z.string(),
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Complex validation">
+    ```javascript
+    export const requestSchema = z.object({
+      title: z.string().min(3).max(100),
+      status: z.enum(['pending', 'active', 'completed']),
+      priority: z.coerce.number().min(1).max(5).default(3),
+      assignee: z.object({
+        _id: z.string(),
+      }).optional(),
+      tags: z.array(z.string()).max(10).default([]),
+    }).refine(
+      (data) => data.status === 'completed' ? data.assignee : true,
+      { message: 'Assignee required for completed tasks' }
+    );
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Middlewares" icon="shield" href="/guides/middlewares">
+    Create custom authentication and validation logic
+  </Card>
+  <Card title="Database operations" icon="database" href="/guides/database-operations">
+    Learn advanced query and update patterns
+  </Card>
+</CardGroup>

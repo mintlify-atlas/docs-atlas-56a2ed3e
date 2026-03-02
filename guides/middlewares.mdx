@@ -1,0 +1,570 @@
+---
+title: Middlewares
+description: Create custom middlewares for authentication, validation, and request processing
+---
+
+Middlewares are functions that run before your endpoint handlers. They're perfect for authentication, authorization, validation, and loading related data.
+
+## Built-in middlewares
+
+Hive includes several middlewares out of the box:
+
+| Middleware | Purpose | Example |
+|------------|---------|----------|
+| `isAuthorized` | Require authentication | Protected endpoints |
+| `allowNoAuth` | Allow public access | Login, signup |
+| `shouldExist` | Load and verify resource exists | Edit endpoints |
+| `attachUser` | Attach user to context | Get current user |
+| `validate` | Validate request data | Auto-applied |
+| `uploadFile` | Handle file uploads | Image/document uploads |
+
+## Using middlewares
+
+Add middlewares to any endpoint:
+
+```javascript src/resources/tasks/endpoints/create.js
+import { z } from 'zod';
+import db from 'db';
+import isAuthorized from 'middlewares/isAuthorized';
+
+const tasksService = db.services.tasks;
+
+export const handler = async (ctx) => {
+  // ctx.state.user is available because of isAuthorized
+  const task = await tasksService.create({
+    ...ctx.validatedData,
+    user: ctx.state.user,
+  });
+  return task;
+};
+
+export const middlewares = [isAuthorized];
+
+export const requestSchema = z.object({
+  title: z.string(),
+});
+
+export const endpoint = {
+  method: 'POST',
+  url: '/',
+};
+```
+
+## isAuthorized
+
+Requires a valid authentication token. Returns 401 if not authenticated.
+
+```javascript src/middlewares/isAuthorized.js
+import attachUser from './attachUser';
+
+export default async (ctx, next) => {
+  if (ctx.state.isSkipAuth) {
+    ctx.state.user = null;
+    return next();
+  }
+
+  await attachUser(ctx, async () => {
+    if (ctx.state.user) {
+      return next();
+    }
+
+    ctx.status = 401;
+    ctx.body = {};
+    return null;
+  });
+};
+```
+
+Usage:
+
+```javascript
+export const middlewares = [isAuthorized];
+
+// Or by name
+export const middlewares = ['isAuthorized'];
+```
+
+<Note>
+  `isAuthorized` attaches the user to `ctx.state.user` for use in your handler.
+</Note>
+
+## allowNoAuth
+
+Allows public access to an endpoint. By default, all endpoints require authentication.
+
+```javascript src/middlewares/allowNoAuth.js
+const middleware = async (ctx, next) => {
+  ctx.state.isSkipAuth = true;
+  return next();
+};
+
+middleware.runOrder = -1;
+
+export default middleware;
+```
+
+Usage:
+
+```javascript src/resources/health/endpoints/get.js
+export const handler = (ctx) => {
+  ctx.body = { status: 'ok' };
+  ctx.status = 200;
+};
+
+export const middlewares = ['allowNoAuth'];
+
+export const endpoint = {
+  method: "GET",
+  url: "/",
+};
+```
+
+## shouldExist
+
+Loads a resource and verifies it exists. Returns 404 if not found.
+
+```javascript src/middlewares/shouldExist.js
+import db from 'db';
+
+function singularize(word) {
+  const endings = {
+    ves: 'fe',
+    ies: 'y',
+    i: 'us',
+    zes: 'ze',
+    ses: 's',
+    es: 'e',
+    s: '',
+  };
+  return word.replace(
+    new RegExp(`(${Object.keys(endings).join('|')})$`),
+    (r) => endings[r]
+  );
+}
+
+export default (
+  resourceName,
+  {
+    criteria = (ctx) => ({ _id: ctx.params[`${singularize(resourceName)}Id`] }),
+    ctxName = resourceName,
+  } = {}
+) => {
+  return async (ctx, next) => {
+    const doc = await db.services[resourceName].findOne(criteria(ctx));
+    ctx.state[ctxName] = doc;
+    ctx.state[singularize(resourceName)] = doc;
+
+    if (!doc) {
+      ctx.throw(404, { message: `${resourceName} not found` });
+    } else {
+      await next();
+    }
+  };
+};
+```
+
+Usage:
+
+```javascript src/resources/tasks/endpoints/update.js
+import shouldExist from 'middlewares/shouldExist';
+
+export const handler = async (ctx) => {
+  // Task is already loaded by shouldExist
+  const task = ctx.state.task;
+  
+  const updated = await tasksService.updateOne(
+    { _id: task._id },
+    (doc) => ({ ...doc, ...ctx.validatedData })
+  );
+  
+  return updated;
+};
+
+export const middlewares = [
+  isAuthorized,
+  shouldExist('tasks')
+];
+
+export const requestSchema = z.object({
+  taskId: z.string(),
+  title: z.string().optional(),
+});
+```
+
+With custom criteria:
+
+```javascript
+export const middlewares = [
+  isAuthorized,
+  shouldExist('tasks', {
+    criteria: (ctx) => ({
+      _id: ctx.params.taskId,
+      'user._id': ctx.state.user._id, // Only user's own tasks
+    }),
+  }),
+];
+```
+
+## attachUser
+
+Attaches the authenticated user to `ctx.state.user`:
+
+```javascript src/middlewares/attachUser.js
+import db from 'db';
+import config from 'app-config';
+
+const userService = db.services.users;
+const tokenService = db.services.tokens;
+
+const storeTokenToState = async (ctx) => {
+  let accessToken = ctx.cookies.get('access_token');
+
+  const { authorization } = ctx.headers;
+
+  if (!accessToken && authorization) {
+    accessToken = authorization.replace('Bearer', '').trim();
+  }
+
+  if (!accessToken && config._hive.authHeaderName && ctx.headers[config._hive.authHeaderName]) {
+    accessToken = ctx.headers[config._hive.authHeaderName];
+  }
+
+  ctx.state.accessToken = accessToken;
+};
+
+export default async (ctx, next) => {
+  storeTokenToState(ctx);
+
+  let token;
+
+  if (ctx.state.accessToken) {
+    token = await tokenService.findOne({ token: ctx.state.accessToken });
+  }
+
+  if (token) {
+    ctx.state.user = await userService.findOne({ _id: token.user._id });
+
+    if (token.metadata) {
+      ctx.state.user.authMetadata = token.metadata;
+    }
+  }
+
+  await next();
+};
+```
+
+Authentication sources (in order of priority):
+1. `access_token` cookie
+2. `Authorization: Bearer <token>` header
+3. Custom header (configured in `app-config`)
+
+## uploadFile
+
+Handles multipart file uploads using Multer:
+
+```javascript src/middlewares/uploadFile.js
+import multer from '@koa/multer';
+
+const storage = multer.memoryStorage();
+
+export default multer({ storage });
+```
+
+Usage:
+
+```javascript src/resources/files/endpoints/upload.js
+import uploadFile from 'middlewares/uploadFile';
+import isAuthorized from 'middlewares/isAuthorized';
+import { uploadToS3 } from 'services/s3';
+
+export const handler = async (ctx) => {
+  const file = ctx.request.file;
+  
+  const url = await uploadToS3({
+    buffer: file.buffer,
+    mimetype: file.mimetype,
+    originalname: file.originalname,
+  });
+  
+  return { url };
+};
+
+export const middlewares = [
+  isAuthorized,
+  uploadFile.single('file'),
+];
+
+export const endpoint = {
+  method: 'POST',
+  url: '/upload',
+};
+```
+
+## Creating custom middlewares
+
+Middlewares are async functions that receive `ctx` and `next`:
+
+<Steps>
+  <Step title="Create the middleware file">
+    Create `src/middlewares/isAdmin.js`:
+
+    ```javascript src/middlewares/isAdmin.js
+    export default async (ctx, next) => {
+      if (!ctx.state.user?.isAdmin) {
+        ctx.throw(403, 'Admin access required');
+      }
+      await next();
+    };
+    ```
+  </Step>
+
+  <Step title="Use in endpoints">
+    ```javascript
+    import isAuthorized from 'middlewares/isAuthorized';
+    import isAdmin from 'middlewares/isAdmin';
+
+    export const middlewares = [isAuthorized, isAdmin];
+    ```
+  </Step>
+</Steps>
+
+## Advanced patterns
+
+<AccordionGroup>
+  <Accordion title="Middleware with parameters">
+    Create a middleware factory function:
+
+    ```javascript src/middlewares/canAccessProject.js
+    import db from 'db';
+
+    const projectService = db.services.projects;
+
+    export default (getProjectId) => {
+      return async (ctx, next) => {
+        const projectId = typeof getProjectId === 'function' 
+          ? getProjectId(ctx) 
+          : ctx.params.projectId;
+
+        const project = await projectService.findOne({
+          _id: projectId,
+          $or: [
+            { 'owner._id': ctx.state.user._id },
+            { 'members._id': ctx.state.user._id },
+          ],
+        });
+
+        if (!project) {
+          ctx.throw(403, 'Access denied');
+        }
+
+        ctx.state.project = project;
+        await next();
+      };
+    };
+    ```
+
+    Usage:
+
+    ```javascript
+    import canAccessProject from 'middlewares/canAccessProject';
+
+    // Using params
+    export const middlewares = [
+      isAuthorized,
+      canAccessProject(),
+    ];
+
+    // Using custom getter
+    export const middlewares = [
+      isAuthorized,
+      canAccessProject((ctx) => ctx.validatedData.projectId),
+    ];
+    ```
+  </Accordion>
+
+  <Accordion title="Conditional middleware">
+    ```javascript src/middlewares/requireEmailVerified.js
+    export default async (ctx, next) => {
+      if (!ctx.state.user?.isEmailVerified) {
+        ctx.throw(403, {
+          message: 'Email verification required',
+          code: 'EMAIL_NOT_VERIFIED',
+        });
+      }
+      await next();
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Data loading middleware">
+    ```javascript src/middlewares/loadUserSettings.js
+    import db from 'db';
+
+    const settingsService = db.services.settings;
+
+    export default async (ctx, next) => {
+      if (ctx.state.user) {
+        const settings = await settingsService.findOne({
+          'user._id': ctx.state.user._id,
+        });
+        ctx.state.settings = settings;
+      }
+      await next();
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Rate limiting middleware">
+    ```javascript src/middlewares/rateLimit.js
+    import db from 'db';
+
+    const rateLimitService = db.services.rateLimits;
+
+    export default (maxRequests = 100, windowMs = 60000) => {
+      return async (ctx, next) => {
+        const identifier = ctx.state.user?._id || ctx.ip;
+        const key = `ratelimit:${identifier}`;
+
+        const limit = await rateLimitService.findOne({ key });
+        const now = Date.now();
+
+        if (limit && now - new Date(limit.resetAt) < 0) {
+          if (limit.count >= maxRequests) {
+            ctx.throw(429, 'Too many requests');
+          }
+          await rateLimitService.atomic.update(
+            { _id: limit._id },
+            { $inc: { count: 1 } }
+          );
+        } else {
+          await rateLimitService.create({
+            key,
+            count: 1,
+            resetAt: new Date(now + windowMs),
+          });
+        }
+
+        await next();
+      };
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Logging middleware">
+    ```javascript src/middlewares/logRequest.js
+    import logger from 'logger';
+
+    export default async (ctx, next) => {
+      const start = Date.now();
+      
+      await next();
+      
+      const duration = Date.now() - start;
+      logger.info({
+        method: ctx.method,
+        url: ctx.url,
+        status: ctx.status,
+        duration,
+        userId: ctx.state.user?._id,
+      });
+    };
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Middleware execution order
+
+Middlewares run in the order they're defined:
+
+```javascript
+export const middlewares = [
+  isAuthorized,        // 1. Authenticate user
+  loadProject,         // 2. Load project
+  canAccessProject,    // 3. Check permissions
+];
+```
+
+Global middlewares run first, then endpoint-specific middlewares.
+
+### Setting run order
+
+Use `runOrder` to control execution:
+
+```javascript
+const middleware = async (ctx, next) => {
+  // ...
+};
+
+middleware.runOrder = -1; // Run before other middlewares
+
+export default middleware;
+```
+
+## Error handling
+
+Middlewares can throw errors to stop execution:
+
+```javascript
+export default async (ctx, next) => {
+  // Simple error
+  if (!condition) {
+    ctx.throw(403, 'Access denied');
+  }
+
+  // Error with details
+  if (!condition) {
+    ctx.throw(400, {
+      message: 'Invalid request',
+      code: 'INVALID_DATA',
+      details: { field: 'email' },
+    });
+  }
+
+  await next();
+};
+```
+
+## Testing middlewares
+
+Test middlewares in isolation:
+
+```javascript
+import isAdmin from 'middlewares/isAdmin';
+
+test('isAdmin allows admin users', async () => {
+  const ctx = {
+    state: { user: { isAdmin: true } },
+    throw: jest.fn(),
+  };
+  const next = jest.fn();
+
+  await isAdmin(ctx, next);
+
+  expect(next).toHaveBeenCalled();
+  expect(ctx.throw).not.toHaveBeenCalled();
+});
+
+test('isAdmin blocks non-admin users', async () => {
+  const ctx = {
+    state: { user: { isAdmin: false } },
+    throw: jest.fn(),
+  };
+  const next = jest.fn();
+
+  await isAdmin(ctx, next);
+
+  expect(ctx.throw).toHaveBeenCalledWith(403, 'Admin access required');
+  expect(next).not.toHaveBeenCalled();
+});
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="lock" href="/guides/authentication">
+    Set up token-based authentication
+  </Card>
+  <Card title="Building endpoints" icon="route" href="/guides/building-endpoints">
+    Use middlewares in your endpoints
+  </Card>
+</CardGroup>

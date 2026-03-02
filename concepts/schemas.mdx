@@ -1,0 +1,642 @@
+---
+title: Schemas
+description: How schemas work with Zod for validation and type safety
+---
+
+Schemas define your data model. Hive uses [Zod](https://zod.dev) for TypeScript-first validation that works at runtime.
+
+## Why Zod?
+
+<CardGroup cols={2}>
+  <Card title="TypeScript-first" icon="code">
+    Infer types automatically from schemas
+  </Card>
+  <Card title="Runtime validation" icon="shield-check">
+    Validate data at runtime, not just compile time
+  </Card>
+  <Card title="Rich error messages" icon="circle-exclamation">
+    Clear, actionable validation errors
+  </Card>
+  <Card title="Composable" icon="puzzle-piece">
+    Build complex schemas from simple parts
+  </Card>
+</CardGroup>
+
+## Basic schema structure
+
+Every schema extends `dbSchema` which provides base fields (from `starter/src/helpers/schema/db.schema.js:3`):
+
+```javascript
+import { z } from 'zod';
+
+export default z.object({
+  _id: z.string(),
+  createdOn: z.coerce.date().default(() => new Date()),
+  updatedOn: z.coerce.date().default(() => new Date()),
+});
+```
+
+Your schemas extend this:
+
+```javascript
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const tasks = dbSchema.extend({
+  title: z.string(),
+  status: z.enum(['pending', 'in_progress', 'done']).default('pending'),
+  priority: z.number().min(1).max(5).default(3),
+});
+
+export default tasks;
+```
+
+<Note>
+  All documents automatically get `_id`, `createdOn`, and `updatedOn` fields. You don't need to define them.
+</Note>
+
+## Common field types
+
+### String fields
+
+```javascript
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const schema = dbSchema.extend({
+  // Required string
+  title: z.string(),
+  
+  // Optional string
+  description: z.string().optional(),
+  
+  // Nullable string (can be null)
+  notes: z.string().nullable(),
+  
+  // Both optional and nullable
+  metadata: z.string().nullable().optional(),
+  
+  // Email validation
+  email: z.string().email(),
+  
+  // URL validation
+  website: z.string().url(),
+  
+  // Min/max length
+  slug: z.string().min(3).max(50),
+  
+  // Regex pattern
+  phone: z.string().regex(/^\+?[1-9]\d{1,14}$/),
+});
+
+export default schema;
+```
+
+### Number fields
+
+```javascript
+const schema = dbSchema.extend({
+  // Integer
+  age: z.number().int(),
+  
+  // With min/max
+  rating: z.number().min(1).max(5),
+  
+  // Positive number
+  price: z.number().positive(),
+  
+  // With default
+  quantity: z.number().default(0),
+  
+  // Coerce from string (useful for query params)
+  page: z.coerce.number().default(1),
+});
+```
+
+### Date fields
+
+```javascript
+const schema = dbSchema.extend({
+  // Date object
+  dueOn: z.date(),
+  
+  // Coerce from string or timestamp
+  startedOn: z.coerce.date(),
+  
+  // With default
+  publishedOn: z.coerce.date().default(() => new Date()),
+  
+  // Optional date
+  completedOn: z.coerce.date().optional(),
+});
+```
+
+### Enum fields
+
+```javascript
+const schema = dbSchema.extend({
+  status: z.enum(['draft', 'published', 'archived']).default('draft'),
+  
+  priority: z.enum(['low', 'medium', 'high', 'urgent']),
+  
+  role: z.enum(['user', 'admin', 'moderator']).default('user'),
+});
+```
+
+### Boolean fields
+
+```javascript
+const schema = dbSchema.extend({
+  isActive: z.boolean().default(true),
+  
+  isPublished: z.boolean().default(false),
+  
+  isPremium: z.boolean().optional(),
+});
+```
+
+### Array fields
+
+```javascript
+const schema = dbSchema.extend({
+  // Array of strings
+  tags: z.array(z.string()),
+  
+  // Array of numbers
+  ratings: z.array(z.number()),
+  
+  // With min/max length
+  categories: z.array(z.string()).min(1).max(5),
+  
+  // Optional array
+  attachments: z.array(z.string()).optional(),
+  
+  // Array with default
+  labels: z.array(z.string()).default([]),
+});
+```
+
+### Object fields (nested documents)
+
+```javascript
+const schema = dbSchema.extend({
+  // Simple object
+  address: z.object({
+    street: z.string(),
+    city: z.string(),
+    zipCode: z.string(),
+  }),
+  
+  // Optional object
+  settings: z.object({
+    theme: z.string().default('light'),
+    notifications: z.boolean().default(true),
+  }).optional(),
+  
+  // Nullable object
+  metadata: z.object({
+    source: z.string(),
+    campaign: z.string(),
+  }).nullable(),
+});
+```
+
+## Embedded documents (references)
+
+Embed references to other documents. This is key for auto-sync:
+
+```javascript
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const tasks = dbSchema.extend({
+  title: z.string(),
+  
+  // Reference to a user
+  assignee: z.object({
+    _id: z.string(),
+    fullName: z.string(),
+    avatarUrl: z.string().url().optional(),
+  }).nullable().optional(),
+  
+  // Reference to another task
+  parentTask: z.object({
+    _id: z.string(),
+    title: z.string(),
+  }).nullable().optional(),
+});
+
+export default tasks;
+```
+
+<Tip>
+  Always include `_id` in embedded documents. This is required for auto-sync to work.
+</Tip>
+
+### Array of embedded documents
+
+```javascript
+const projects = dbSchema.extend({
+  name: z.string(),
+  
+  // Array of user references
+  members: z.array(z.object({
+    _id: z.string(),
+    fullName: z.string(),
+    role: z.enum(['owner', 'admin', 'member']),
+  })).default([]),
+});
+```
+
+## Using coerce for flexibility
+
+Zod's `.coerce` modifier converts input to the expected type:
+
+```javascript
+const schema = dbSchema.extend({
+  // Accepts "123" and converts to 123
+  page: z.coerce.number(),
+  
+  // Accepts "2024-01-15" and converts to Date
+  publishedOn: z.coerce.date(),
+  
+  // Accepts "true" and converts to true
+  isActive: z.coerce.boolean(),
+  
+  // Useful for nullable fields from forms
+  description: z.coerce.string().nullable().optional(),
+});
+```
+
+<Note>
+  Use `.coerce` for endpoint schemas that accept query params or form data. Query params are always strings.
+</Note>
+
+## Secure fields
+
+Prevent sensitive fields from being returned in queries:
+
+```javascript
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const users = dbSchema.extend({
+  email: z.string().email(),
+  fullName: z.string(),
+  password: z.string(),
+  apiKey: z.string().optional(),
+  internalNotes: z.string().optional(),
+});
+
+export default users;
+export const secureFields = ['password', 'apiKey', 'internalNotes'];
+```
+
+These fields are:
+- Stored in the database
+- **Not returned** in query results
+- **Not included** in API responses
+
+<Warning>
+  Secure fields are filtered out, not encrypted. Use proper password hashing libraries like bcrypt.
+</Warning>
+
+## How schemas create services
+
+When the framework initializes, it scans for schemas and creates services (from `starter/src/db.js:14`):
+
+```javascript
+db.init = async () => {
+  const schemaPaths = await getSchemas();
+
+  await Promise.all(_.map(
+    schemaPaths,
+    async ({ file: schemaFile, resourceName, name: schemaName }) => {
+      let { default: schema, secureFields = [] } = (await import(schemaFile));
+
+      // Store schema for reference
+      db.schemas[schemaName] = schema;
+
+      // Create service with validation
+      db.services[schemaName] = db.createService(`${resourceName}`, {
+        validate: (obj) => {
+          return { value: schema.parse(obj) };
+        },
+        secureFields: secureFields,
+      });
+    }
+  ));
+};
+```
+
+<Steps>
+  <Step title="Find all schemas">
+    Framework scans `resources/*/` folders for `*.schema.js` files
+  </Step>
+  
+  <Step title="Import schema">
+    Dynamically imports the default export (Zod schema)
+  </Step>
+  
+  <Step title="Store in db.schemas">
+    Makes schema accessible at `db.schemas.{name}`
+  </Step>
+  
+  <Step title="Create service">
+    Generates `db.services.{name}` with validation and CRUD methods
+  </Step>
+</Steps>
+
+## Schema validation in endpoints
+
+Every endpoint has a `requestSchema` that validates input (from `starter/src/middlewares/validate.js:18`):
+
+```javascript
+const validate = (schema) => async (ctx, next) => {
+  const result = await schema.passthrough().safeParseAsync({
+    ...(ctx.request.body),
+    ...ctx.query,
+    ...ctx.params,
+  });
+
+  if (!result.success) ctx.throw(400, { clientErrors: formatError(result.error) });
+
+  ctx.validatedData = result.data;
+
+  await next();
+};
+```
+
+This validates:
+- Request body (`ctx.request.body`)
+- Query parameters (`ctx.query`)
+- URL parameters (`ctx.params`)
+
+<Accordion title="What does .passthrough() do?">
+  By default, Zod strips unknown fields. `.passthrough()` allows extra fields to pass through, which is useful when you have fields in the URL that aren't in your schema.
+</Accordion>
+
+### Validation errors
+
+When validation fails, you get structured errors:
+
+```json
+{
+  "clientErrors": {
+    "email": ["Invalid email"],
+    "age": ["Number must be greater than or equal to 18"]
+  }
+}
+```
+
+Error formatting (from `starter/src/middlewares/validate.js:2`):
+
+```javascript
+const formatError = (zodError) => {
+  const errors = {};
+
+  zodError.issues.forEach((error) => {
+    const key = error.path.join('.');
+
+    if (!errors[key]) {
+      errors[key] = [];
+    }
+
+    (errors[key]).push(error.message);
+  });
+
+  return errors;
+};
+```
+
+## Extending framework schemas
+
+Add fields to built-in resources without modifying framework code:
+
+```javascript
+// src/resources/users/users.extends.schema.js
+import { z } from 'zod';
+
+export default z.object({
+  bio: z.string().optional(),
+  location: z.string().optional(),
+  website: z.string().url().optional(),
+  dateOfBirth: z.coerce.date().optional(),
+});
+```
+
+The framework merges this automatically (from `starter/src/db.js:22`):
+
+```javascript
+if (process.env.HIVE_SRC) {
+  let extendSchemaPath = `${process.env.HIVE_SRC}/resources/${resourceName}/${schemaName}.extends.schema.js`;
+  if (fs.existsSync(extendSchemaPath)) {
+    let extendsSchema = (await import(extendSchemaPath)).default;
+    schema = schema.append(extendsSchema);
+  }
+}
+```
+
+<Warning>
+  Use `.extends.schema.js` suffix when extending framework resources. Using `.schema.js` replaces the entire schema.
+</Warning>
+
+## Schema composition
+
+Build complex schemas from reusable parts:
+
+```javascript
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+// Reusable address schema
+const addressSchema = z.object({
+  street: z.string(),
+  city: z.string(),
+  state: z.string(),
+  zipCode: z.string(),
+  country: z.string().default('US'),
+});
+
+// User with address
+const users = dbSchema.extend({
+  email: z.string().email(),
+  fullName: z.string(),
+  shippingAddress: addressSchema.optional(),
+  billingAddress: addressSchema.optional(),
+});
+
+export default users;
+```
+
+## Custom validation
+
+Add custom validation logic:
+
+```javascript
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const users = dbSchema.extend({
+  email: z.string().email(),
+  
+  username: z.string()
+    .min(3)
+    .max(20)
+    .regex(/^[a-zA-Z0-9_]+$/)
+    .refine(
+      (val) => !val.startsWith('admin'),
+      { message: 'Username cannot start with "admin"' }
+    ),
+  
+  password: z.string()
+    .min(8)
+    .refine(
+      (val) => /[A-Z]/.test(val) && /[a-z]/.test(val) && /[0-9]/.test(val),
+      { message: 'Password must contain uppercase, lowercase, and number' }
+    ),
+});
+
+export default users;
+```
+
+## Schema-based TypeScript types
+
+Infer TypeScript types from schemas:
+
+```typescript
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const tasks = dbSchema.extend({
+  title: z.string(),
+  status: z.enum(['pending', 'in_progress', 'done']),
+  assignee: z.object({
+    _id: z.string(),
+    fullName: z.string(),
+  }).nullable().optional(),
+});
+
+export default tasks;
+
+// Infer the TypeScript type
+export type Task = z.infer<typeof tasks>;
+
+// Use in your code
+const createTask = (data: Task) => {
+  // TypeScript knows the shape of data
+};
+```
+
+## Best practices
+
+<AccordionGroup>
+  <Accordion title="Use .coerce for query params">
+    Query parameters are always strings. Use `.coerce` to convert them:
+    
+    ```javascript
+    const requestSchema = z.object({
+      page: z.coerce.number().default(1),
+      perPage: z.coerce.number().default(20),
+    });
+    ```
+  </Accordion>
+  
+  <Accordion title="Make nullable fields explicit">
+    Be clear about nullable vs optional:
+    
+    - `.optional()` — Field can be omitted
+    - `.nullable()` — Field can be `null`
+    - `.nullable().optional()` — Field can be omitted OR `null`
+  </Accordion>
+  
+  <Accordion title="Use enums for fixed values">
+    Don't use strings when you have a fixed set of values:
+    
+    ```javascript
+    // Good
+    status: z.enum(['draft', 'published', 'archived'])
+    
+    // Bad
+    status: z.string() // Allows any string
+    ```
+  </Accordion>
+  
+  <Accordion title="Always include _id in embedded docs">
+    Auto-sync requires `_id` to track references:
+    
+    ```javascript
+    // Good
+    assignee: z.object({
+      _id: z.string(),
+      fullName: z.string(),
+    })
+    
+    // Bad - auto-sync won't work
+    assignee: z.object({
+      fullName: z.string(),
+    })
+    ```
+  </Accordion>
+  
+  <Accordion title="Provide defaults for arrays">
+    Prevents undefined errors:
+    
+    ```javascript
+    tags: z.array(z.string()).default([])
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Example: Complete schema
+
+```javascript
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const invoices = dbSchema.extend({
+  // Basic info
+  invoiceNumber: z.string(),
+  status: z.enum(['draft', 'sent', 'paid', 'overdue']).default('draft'),
+  
+  // Amounts
+  subtotal: z.number().positive(),
+  tax: z.number().min(0),
+  total: z.number().positive(),
+  
+  // Dates
+  issuedOn: z.coerce.date(),
+  dueOn: z.coerce.date(),
+  paidOn: z.coerce.date().nullable().optional(),
+  
+  // Client reference
+  client: z.object({
+    _id: z.string(),
+    name: z.string(),
+    email: z.string().email(),
+  }),
+  
+  // Line items
+  items: z.array(z.object({
+    description: z.string(),
+    quantity: z.number().int().positive(),
+    unitPrice: z.number().positive(),
+    total: z.number().positive(),
+  })).min(1),
+  
+  // Optional fields
+  notes: z.string().optional(),
+  internalNotes: z.string().optional(),
+  attachments: z.array(z.string().url()).default([]),
+});
+
+export default invoices;
+export const secureFields = ['internalNotes'];
+```
+
+This schema provides:
+- Type safety with Zod
+- Runtime validation
+- Auto-generated database service
+- Secure field filtering
+- Clear structure for auto-sync

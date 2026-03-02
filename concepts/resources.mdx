@@ -1,0 +1,527 @@
+---
+title: Resources
+description: Resource pattern and folder structure for organizing features
+---
+
+Every feature in Hive is a **resource** — a folder with a predictable structure. This scales from 10 endpoints to 1000.
+
+## What is a resource?
+
+A resource represents a domain concept in your application: users, tasks, posts, invoices, etc. Each resource is self-contained with its own data model, API endpoints, event handlers, and business logic.
+
+<CardGroup cols={2}>
+  <Card title="Self-contained" icon="box">
+    Everything related to a feature lives in one folder
+  </Card>
+  <Card title="Convention-based" icon="compass">
+    Predictable structure eliminates boilerplate
+  </Card>
+  <Card title="Auto-discovered" icon="radar">
+    Framework finds and loads resources automatically
+  </Card>
+  <Card title="AI-friendly" icon="robot">
+    Clear patterns that AI assistants understand
+  </Card>
+</CardGroup>
+
+## Folder structure
+
+Every resource follows this structure:
+
+```
+src/resources/{name}/
+├── {name}.schema.js          # Data model (required)
+├── endpoints/                # API routes
+│   ├── create.js
+│   ├── list.js
+│   ├── update.js
+│   └── delete.js
+├── handlers/                 # Event handlers
+│   └── onCreated.js
+└── methods/                  # Shared business logic
+    └── sendNotification.js
+```
+
+<Note>
+  Only the schema file is required. All other folders are optional.
+</Note>
+
+## Creating a resource
+
+Use the AI command:
+
+```
+add-resource tasks
+```
+
+This creates:
+
+```
+src/resources/tasks/
+└── tasks.schema.js
+```
+
+The framework automatically:
+- Creates a MongoDB collection named `tasks`
+- Generates `db.services.tasks` with CRUD methods
+- Makes the schema available at `db.schemas.tasks`
+
+## Schema file (required)
+
+Every resource must have a schema file. Example from `starter/src/resources/users/users.schema.js:1`:
+
+```javascript
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const users = dbSchema.extend({
+  email: z.string().email(),
+  fullName: z.string(),
+  avatarUrl: z.string().url().optional(),
+  password: z.string(),
+  
+  oauth: z.object({
+    google: z.object({}),
+  }).optional(),
+});
+
+export default users;
+```
+
+<Accordion title="What is dbSchema?">
+  The base schema that all resources extend (from `starter/src/helpers/schema/db.schema.js:3`):
+
+  ```javascript
+  import { z } from 'zod';
+
+  export default z.object({
+    _id: z.string(),
+    createdOn: z.coerce.date().default(() => new Date()),
+    updatedOn: z.coerce.date().default(() => new Date()),
+  });
+  ```
+
+  Every resource automatically gets `_id`, `createdOn`, and `updatedOn` fields.
+</Accordion>
+
+### Secure fields
+
+Prevent fields from being returned in queries:
+
+```javascript
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const users = dbSchema.extend({
+  email: z.string().email(),
+  password: z.string(),
+  apiKey: z.string().optional(),
+});
+
+export default users;
+export const secureFields = ['password', 'apiKey'];
+```
+
+<Warning>
+  Secure fields are stripped from query results but still stored in the database. They're not encrypted — use proper password hashing.
+</Warning>
+
+## Endpoints folder (optional)
+
+API routes live here. Each file exports an endpoint configuration.
+
+Example from `starter/src/resources/users/endpoints/getCurrentUser.js:1`:
+
+```javascript
+import { z } from 'zod';
+import isAuthorized from 'middlewares/isAuthorized';
+
+export const handler = async (ctx) => {
+  ctx.body = ctx.state.user;
+};
+
+export const middlewares = [isAuthorized];
+export const requestSchema = z.object({});
+
+export const endpoint = {
+  method: "GET",
+  url: "/me",
+};
+```
+
+This creates the route `GET /users/me`.
+
+<Tip>
+  The resource name is automatically prepended to the URL. `/me` becomes `/users/me`.
+</Tip>
+
+### Endpoint file exports
+
+Each endpoint file must export:
+
+| Export | Type | Required | Description |
+|--------|------|----------|-------------|
+| `endpoint` | Object | Yes | URL and HTTP method |
+| `handler` | Function | Yes | Request handler function |
+| `requestSchema` | Zod schema | Yes | Validation schema |
+| `middlewares` | Array | No | Custom middlewares |
+
+See the [endpoints documentation](/concepts/endpoints) for details.
+
+## Handlers folder (optional)
+
+Event handlers react to database changes. They run asynchronously after data is saved.
+
+Example handler:
+
+```javascript
+import db from 'db';
+import ifUpdated from 'helpers/db/ifUpdated';
+
+const tasksService = db.services.tasks;
+const usersService = db.services.users;
+
+tasksService.on('created', async ({ doc }) => {
+  console.log('Task created:', doc._id);
+  // Send notification, create activity log, etc.
+});
+
+tasksService.on('updated', ifUpdated(['status'], async ({ doc, prevDoc }) => {
+  console.log('Task status changed from', prevDoc.status, 'to', doc.status);
+}));
+
+tasksService.on('removed', async ({ doc }) => {
+  console.log('Task deleted:', doc._id);
+  // Cleanup related data
+});
+```
+
+<Note>
+  Handlers are automatically loaded when the framework starts (from `starter/src/helpers/importHandlers.js:5`).
+</Note>
+
+See the [handlers documentation](/concepts/handlers) for details.
+
+## Methods folder (optional)
+
+Shared business logic that doesn't fit in endpoints or handlers.
+
+Example method file:
+
+```javascript
+import db from 'db';
+
+const tasksService = db.services.tasks;
+
+export default async ({ taskId, userId }) => {
+  const task = await tasksService.findOne({ _id: taskId });
+  
+  if (!task) {
+    throw new Error('Task not found');
+  }
+  
+  // Complex business logic
+  await sendSlackNotification({ task, userId });
+  await createActivityLog({ task, userId });
+  await updateAnalytics({ task });
+  
+  return task;
+};
+```
+
+Use it in endpoints:
+
+```javascript
+import assignTask from '../methods/assignTask';
+
+export const handler = async (ctx) => {
+  const { taskId } = ctx.validatedData;
+  const result = await assignTask({ 
+    taskId, 
+    userId: ctx.state.user._id 
+  });
+  
+  ctx.body = result;
+};
+```
+
+<Tip>
+  Methods promote code reuse across endpoints and handlers. They're just JavaScript modules — import them anywhere.
+</Tip>
+
+## How resources are discovered
+
+The framework scans both built-in and user resources (from `starter/src/helpers/getResources.js:16`):
+
+```javascript
+export default async () => {
+  let resourceDirs = await getDirectories(`${__dirname}/../resources`);
+
+  if (process.env.HIVE_SRC) {
+    let hiveResourcesDirPath = `${process.env.HIVE_SRC}/resources`;
+   
+    if (fs.existsSync(hiveResourcesDirPath)) {
+      resourceDirs = _.uniqBy([
+        ...resourceDirs, 
+        ...((await getDirectories(hiveResourcesDirPath))
+          .map(r => ({ dirName: r.dirName, isHive: true })))
+      ], r => r.dirName);
+    }
+  }
+
+  return resourceDirs
+    .filter(({ dirName }) => dirName !== "health")
+    .map(({ dirName }) => ({
+      name: dirName,
+    }));
+};
+```
+
+<Steps>
+  <Step title="Framework resources">
+    Load built-in resources from `.hive/src/resources/` (users, tokens, etc.)
+  </Step>
+  
+  <Step title="User resources">
+    Load your resources from `src/resources/` if `HIVE_SRC` is set
+  </Step>
+  
+  <Step title="Merge and dedupe">
+    User resources override framework resources with the same name
+  </Step>
+  
+  <Step title="Filter special cases">
+    The `health` resource is excluded (it's mounted separately)
+  </Step>
+</Steps>
+
+## Built-in resources
+
+Hive includes these framework resources:
+
+<AccordionGroup>
+  <Accordion title="users">
+    User accounts with email, password, and OAuth support.
+    
+    **Schema fields:**
+    - `email` — Email address
+    - `fullName` — Display name
+    - `avatarUrl` — Profile picture URL
+    - `password` — Hashed password
+    - `oauth` — OAuth provider data
+    
+    **Endpoints:**
+    - `GET /users/me` — Get current user
+    - `GET /users/profile/:userId` — Get user profile
+  </Accordion>
+  
+  <Accordion title="tokens">
+    Authentication tokens for session management.
+    
+    **Methods:**
+    - `generateSecureToken()` — Create random token
+    - `setToken()` — Store token and set cookie
+    - `storeToken()` — Save token to database
+  </Accordion>
+  
+  <Accordion title="health">
+    Health check endpoint for monitoring.
+    
+    **Endpoints:**
+    - `GET /health` — Returns server status
+  </Accordion>
+  
+  <Accordion title="schemaMappings">
+    Internal resource for tracking auto-sync mappings. Don't modify this.
+  </Accordion>
+</AccordionGroup>
+
+## Extending framework resources
+
+You can extend built-in resources by creating a matching folder in your `src/resources/`.
+
+To add fields to the `users` schema:
+
+```javascript
+// src/resources/users/users.extends.schema.js
+import { z } from 'zod';
+
+export default z.object({
+  bio: z.string().optional(),
+  location: z.string().optional(),
+  website: z.string().url().optional(),
+});
+```
+
+The framework automatically merges this with the built-in schema (from `starter/src/db.js:22`):
+
+```javascript
+if (process.env.HIVE_SRC) {
+  let extendSchemaPath = `${process.env.HIVE_SRC}/resources/${resourceName}/${schemaName}.extends.schema.js`;
+  if (fs.existsSync(extendSchemaPath)) {
+    let extendsSchema = (await import(extendSchemaPath)).default;
+    schema = schema.append(extendsSchema);
+  }
+}
+```
+
+<Warning>
+  Use `{name}.extends.schema.js` not `{name}.schema.js` when extending framework resources. Otherwise you'll override the entire schema.
+</Warning>
+
+## Naming conventions
+
+<Steps>
+  <Step title="Resource names">
+    Use plural, lowercase names: `users`, `tasks`, `invoices`
+  </Step>
+  
+  <Step title="Schema files">
+    Name matches resource: `users.schema.js`, `tasks.schema.js`
+  </Step>
+  
+  <Step title="Endpoint files">
+    Use descriptive names: `create.js`, `list.js`, `getCurrentUser.js`
+  </Step>
+  
+  <Step title="Handler files">
+    Describe what they do: `sendNotification.js`, `updateCount.js`
+  </Step>
+  
+  <Step title="Method files">
+    Use verbs: `assignTask.js`, `calculateTotal.js`, `validateEmail.js`
+  </Step>
+</Steps>
+
+## Best practices
+
+<AccordionGroup>
+  <Accordion title="Keep resources focused">
+    Each resource should represent a single domain concept. If you're tempted to add unrelated fields, you probably need a new resource.
+  </Accordion>
+  
+  <Accordion title="Use methods for shared logic">
+    If code is used in multiple endpoints or handlers, extract it to a method. This makes testing easier and reduces duplication.
+  </Accordion>
+  
+  <Accordion title="Handlers are for side effects">
+    Handlers should not modify the document that triggered them (it's already saved). Use them for notifications, analytics, syncing related data, etc.
+  </Accordion>
+  
+  <Accordion title="Don't overthink the structure">
+    Start simple. Add folders (endpoints, handlers, methods) only when you need them. The framework doesn't care if they're empty.
+  </Accordion>
+</AccordionGroup>
+
+## Example: Complete task resource
+
+Here's a full example:
+
+```
+src/resources/tasks/
+├── tasks.schema.js
+├── endpoints/
+│   ├── create.js
+│   ├── list.js
+│   ├── update.js
+│   └── delete.js
+├── handlers/
+│   └── notifyAssignee.js
+└── methods/
+    └── assignToUser.js
+```
+
+**tasks.schema.js:**
+
+```javascript
+import { z } from 'zod';
+import dbSchema from 'helpers/schema/db.schema';
+
+const schema = dbSchema.extend({
+  title: z.string(),
+  status: z.enum(['pending', 'in_progress', 'done']).default('pending'),
+  assignee: z.object({
+    _id: z.string(),
+    fullName: z.string(),
+  }).nullable().optional(),
+  dueOn: z.coerce.date().optional(),
+});
+
+export default schema;
+```
+
+**endpoints/create.js:**
+
+```javascript
+import { z } from 'zod';
+import db from 'db';
+import isAuthorized from 'middlewares/isAuthorized';
+
+const tasksService = db.services.tasks;
+
+export const requestSchema = z.object({
+  title: z.string(),
+  dueOn: z.string().optional(),
+});
+
+export const handler = async (ctx) => {
+  const task = await tasksService.create({
+    ...ctx.validatedData,
+    status: 'pending',
+  });
+  
+  ctx.body = task;
+};
+
+export const middlewares = [isAuthorized];
+
+export const endpoint = {
+  method: 'POST',
+  url: '/',
+};
+```
+
+**handlers/notifyAssignee.js:**
+
+```javascript
+import db from 'db';
+import ifUpdated from 'helpers/db/ifUpdated';
+
+const tasksService = db.services.tasks;
+
+tasksService.on('updated', ifUpdated(['assignee'], async ({ doc, prevDoc }) => {
+  if (doc.assignee?._id) {
+    console.log(`Notify user ${doc.assignee._id} about task ${doc._id}`);
+    // Send email or push notification
+  }
+}));
+```
+
+**methods/assignToUser.js:**
+
+```javascript
+import db from 'db';
+
+const tasksService = db.services.tasks;
+const usersService = db.services.users;
+
+export default async ({ taskId, userId }) => {
+  const user = await usersService.findOne(
+    { _id: userId },
+    { fields: ['_id', 'fullName'] }
+  );
+  
+  if (!user) {
+    throw new Error('User not found');
+  }
+  
+  await tasksService.updateOne(
+    { _id: taskId },
+    (doc) => ({ ...doc, assignee: user })
+  );
+  
+  return user;
+};
+```
+
+This resource is now fully functional with validation, auth, and automatic notifications.

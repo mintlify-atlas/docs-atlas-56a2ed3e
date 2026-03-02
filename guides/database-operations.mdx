@@ -1,0 +1,457 @@
+---
+title: Database operations
+description: Perform CRUD operations with auto-generated MongoDB services
+---
+
+Hive automatically generates a database service for each schema. Services provide a clean API for CRUD operations with built-in validation and event emission.
+
+## Accessing services
+
+Import the `db` object and access services by schema name:
+
+```javascript
+import db from 'db';
+
+const userService = db.services.users;
+const taskService = db.services.tasks;
+```
+
+<Note>
+  Service names match your schema filenames. A schema at `src/resources/tasks/tasks.schema.js` creates `db.services.tasks`.
+</Note>
+
+## Create operations
+
+<Steps>
+  <Step title="Create a single document">
+    ```javascript
+    const task = await taskService.create({
+      title: 'Build API',
+      status: 'pending',
+      assignee: {
+        _id: user._id,
+        fullName: user.fullName,
+      },
+    });
+    ```
+  </Step>
+
+  <Step title="Create multiple documents">
+    ```javascript
+    const tasks = await taskService.create([
+      { title: 'Task 1', status: 'pending' },
+      { title: 'Task 2', status: 'pending' },
+      { title: 'Task 3', status: 'active' },
+    ]);
+    ```
+  </Step>
+</Steps>
+
+Example from the Hive source:
+
+```javascript src/resources/users/methods/ensureUserCreated.js
+import db from 'db';
+import _ from 'lodash';
+import slug from 'slug';
+
+const userService = db.services.users;
+
+const createUserAccount = async (userData) => {
+  let username = formatUsername({ 
+    fullName: userData.fullName, 
+    email: userData.email 
+  });
+
+  if (await userService.exists({ username })) {
+    username += _.random(1000, 9999);
+  }
+
+  const user = await userService.create({
+    fullName: userData.fullName,
+    username,
+    email: userData.email,
+    isEmailVerified: true,
+    avatarUrl: userData.avatarUrl,
+    oauth: userData.oauth,
+  });
+
+  return user;
+};
+```
+
+## Read operations
+
+<AccordionGroup>
+  <Accordion title="Find one document">
+    ```javascript
+    const user = await userService.findOne({ _id: userId });
+    const task = await taskService.findOne({ 
+      status: 'active',
+      'assignee._id': userId 
+    });
+    ```
+
+    Returns `null` if not found.
+  </Accordion>
+
+  <Accordion title="Find multiple documents">
+    ```javascript
+    const { results, count } = await taskService.find(
+      { status: 'active' },
+      { 
+        page: 1, 
+        perPage: 20, 
+        sort: '-createdOn' 
+      }
+    );
+    ```
+
+    Returns an object with:
+    - `results`: Array of documents
+    - `count`: Total count (ignores pagination)
+  </Accordion>
+
+  <Accordion title="Check if document exists">
+    ```javascript
+    const exists = await userService.exists({ email: 'user@example.com' });
+    if (exists) {
+      // Handle duplicate
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Aggregation queries">
+    ```javascript src/resources/tokens/methods/setToken.js
+    import db from 'db';
+    const tokenService = db.services.tokens;
+
+    export default async () => {
+      const { results } = await tokenService.aggregate([]);
+      return results;
+    };
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Update operations
+
+<Warning>
+  Always use the update function pattern. Direct object updates won't trigger validation or events.
+</Warning>
+
+<Steps>
+  <Step title="Update a single document">
+    ```javascript
+    const updated = await taskService.updateOne(
+      { _id: taskId },
+      (doc) => ({
+        ...doc,
+        status: 'completed',
+        completedAt: new Date(),
+      })
+    );
+    ```
+
+    The function receives the current document and returns the updated version.
+  </Step>
+
+  <Step title="Update multiple documents">
+    ```javascript
+    const updated = await taskService.updateMany(
+      { status: 'pending', dueOn: { $lt: new Date() } },
+      (doc) => ({
+        ...doc,
+        status: 'overdue',
+      })
+    );
+    ```
+  </Step>
+</Steps>
+
+Real-world example from Hive:
+
+```javascript src/resources/users/methods/ensureUserCreated.js
+const user = await userService.findOne({ email: userData.email });
+
+if (user && userData.oauth) {
+  const changedUser = await userService.updateOne(
+    { _id: user._id },
+    (old) => {
+      const newUser = old;
+      newUser.oauth = old.oauth || {};
+      newUser.oauth = {
+        ...newUser.oauth,
+        ...userData.oauth
+      }
+      newUser.isEmailVerified = true;
+      return newUser;
+    }
+  );
+  return changedUser;
+}
+```
+
+## Delete operations
+
+<CodeGroup>
+```javascript Remove by query
+await taskService.remove({ _id: taskId });
+
+await taskService.remove({ 
+  status: 'archived',
+  createdOn: { $lt: oneYearAgo } 
+});
+```
+
+```javascript Remove with result
+const removed = await taskService.remove({ _id: taskId });
+console.log('Removed:', removed.results.length);
+```
+</CodeGroup>
+
+<Note>
+  The `remove()` method returns an object with a `results` array of deleted documents.
+</Note>
+
+## Query options
+
+All find operations accept options:
+
+| Option | Type | Description | Example |
+|--------|------|-------------|----------|
+| `page` | number | Page number (1-indexed) | `page: 2` |
+| `perPage` | number | Results per page | `perPage: 50` |
+| `sort` | string | Sort field (prefix with `-` for descending) | `sort: '-createdOn'` |
+| `fields` | array | Fields to include | `fields: ['_id', 'title']` |
+| `session` | object | MongoDB session for transactions | `session: session` |
+
+```javascript
+const { results, count } = await taskService.find(
+  { status: 'active' },
+  {
+    page: 1,
+    perPage: 20,
+    sort: '-createdOn',
+    fields: ['_id', 'title', 'status'],
+  }
+);
+```
+
+## Auto-sync embedded documents
+
+Hive automatically keeps embedded documents in sync when the source document changes.
+
+<Steps>
+  <Step title="Configure schema mappings">
+    Create `src/autoMap/schemaMappings.json`:
+
+    ```json
+    {
+      "tasks": {
+        "assignee": { "schema": "users" },
+        "project": { "schema": "projects" }
+      },
+      "comments": {
+        "author": { "schema": "users" }
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Include fields in schema">
+    ```javascript src/resources/tasks/tasks.schema.js
+    const tasks = dbSchema.extend({
+      title: z.string(),
+      assignee: z.object({
+        _id: z.string(),
+        fullName: z.coerce.string().nullable().optional(),
+        avatarUrl: z.coerce.string().nullable().optional(),
+      }).nullable().optional(),
+    });
+    ```
+  </Step>
+
+  <Step title="Auto-sync in action">
+    When a user updates their name:
+
+    ```javascript
+    await userService.updateOne(
+      { _id: userId },
+      (doc) => ({ ...doc, fullName: 'New Name' })
+    );
+    ```
+
+    All tasks with that user as assignee automatically update their `assignee.fullName` field.
+  </Step>
+</Steps>
+
+<Tip>
+  Auto-sync works for both single embedded documents and arrays of embedded documents.
+</Tip>
+
+From the Hive auto-sync implementation:
+
+```javascript src/autoMap/addHandlers.js
+db.services[dependentFieldSchemaName].on(
+  "updated",
+  ifUpdated(dependentFields, async ({ doc }) => {
+    const toUpdate = _.pick(doc, ["_id", ...dependentFields]);
+    if (isZodArray(schema.shape[dependentFieldName])) {
+      db.services[schemaName].atomic.update(
+        { [`${dependentFieldName}._id`]: doc._id },
+        {
+          $set: {
+            [`${dependentFieldName}.$`]: toUpdate,
+          },
+        },
+        { multi: true }
+      );
+    }
+  })
+);
+```
+
+## Atomic operations
+
+For bulk updates that shouldn't trigger events or validation, use atomic operations:
+
+```javascript
+await taskService.atomic.update(
+  { 'assignee._id': userId },
+  { $set: { 'assignee.fullName': newName } },
+  { multi: true }
+);
+```
+
+<Warning>
+  Atomic operations bypass validation and don't emit events. Use them only for internal system operations like auto-sync.
+</Warning>
+
+Available atomic methods:
+
+- `atomic.update`
+- `atomic.findOneAndUpdate`
+- `atomic.findOneAndDelete`
+- `atomic.insert`
+- `atomic.remove`
+- `atomic.bulkWrite`
+
+## Transactions
+
+Perform multiple operations atomically:
+
+```javascript
+await taskService.performTransaction(async (session) => {
+  await taskService.create(
+    { title: 'New task' },
+    { session }
+  );
+  
+  await projectService.updateOne(
+    { _id: projectId },
+    (doc) => ({ ...doc, taskCount: doc.taskCount + 1 }),
+    { session }
+  );
+});
+```
+
+From the service implementation:
+
+```javascript src/lib/node-mongo/src/mongo-service.js
+async performTransaction(transactionFn, options = {}) {
+  await this._collection.manager.executeWhenOpened();
+  const session = this._collection.manager._client.startSession(options);
+
+  try {
+    await session.withTransaction(transactionFn);
+  } catch (error) {
+    session.endSession();
+    throw error;
+  }
+}
+```
+
+## Secure fields
+
+Fields marked as secure are automatically excluded from results:
+
+```javascript src/resources/users/users.schema.js
+const users = dbSchema.extend({
+  email: z.string().email(),
+  fullName: z.string(),
+  password: z.string(),
+});
+
+export default users;
+export const secureFields = ['password'];
+```
+
+To include secure fields (for internal operations):
+
+```javascript
+const user = await userService.findOne(
+  { _id: userId },
+  { isIncludeSecureFields: true }
+);
+```
+
+## Advanced queries
+
+<AccordionGroup>
+  <Accordion title="Date ranges">
+    ```javascript
+    const tasks = await taskService.find({
+      createdOn: {
+        $gte: new Date('2024-01-01'),
+        $lt: new Date('2024-02-01'),
+      },
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Array queries">
+    ```javascript
+    // Find tasks with specific tag
+    const tasks = await taskService.find({
+      tags: 'urgent',
+    });
+
+    // Find tasks with any of these tags
+    const tasks = await taskService.find({
+      tags: { $in: ['urgent', 'high-priority'] },
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Nested field queries">
+    ```javascript
+    const tasks = await taskService.find({
+      'assignee._id': userId,
+      'project.status': 'active',
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Complex conditions">
+    ```javascript
+    const tasks = await taskService.find({
+      $or: [
+        { status: 'urgent' },
+        { dueOn: { $lt: new Date() } },
+      ],
+      'assignee._id': userId,
+    });
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Event handlers" icon="bolt" href="/guides/event-handlers">
+    React to database changes automatically
+  </Card>
+  <Card title="Building endpoints" icon="route" href="/guides/building-endpoints">
+    Expose database operations via REST API
+  </Card>
+</CardGroup>

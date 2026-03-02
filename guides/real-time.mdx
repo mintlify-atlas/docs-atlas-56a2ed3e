@@ -1,0 +1,495 @@
+---
+title: Real-time with Socket.io
+description: Push real-time updates to clients using Socket.io and Redis
+---
+
+Hive includes Socket.io with Redis adapter for scalable real-time communication. Use it to push database changes, notifications, and live updates to connected clients.
+
+## How it works
+
+Hive configures Socket.io with:
+- Redis pub/sub for horizontal scaling
+- Cookie-based authentication
+- Room-based message routing
+
+## Socket.io setup
+
+Socket.io is initialized automatically in your app:
+
+```javascript src/socketIo.js
+import db from 'db';
+import { Server } from 'socket.io';
+import { createClient } from 'redis';
+import { createAdapter } from '@socket.io/redis-adapter';
+import config from 'app-config';
+import logger from 'logger';
+
+export default (server) => {
+  const io = new Server(server);
+
+  const pubClient = createClient({ url: config.redis.url });
+  const subClient = pubClient.duplicate();
+
+  io.adapter(createAdapter(pubClient, subClient));
+
+  const getCookie = (cookieString, name) => {
+    const value = `; ${cookieString}`;
+    const parts = value.split(`; ${name}=`);
+
+    if (parts.length === 2) {
+      return parts.pop().split(";").shift();
+    }
+
+    return null;
+  };
+
+  const getUserData = async (socket) => {
+    const accessToken = getCookie(
+      socket.handshake.headers.cookie,
+      "access_token"
+    ) || '';
+
+    let tokenDoc = null;
+
+    if (!accessToken) {
+      logger.info(
+        "Note: socket io anonymous auth. Add user authentication in socketIoService"
+      );
+    } else {
+      tokenDoc = await db.services.tokens.findOne({ token: accessToken });
+    }
+
+    return {
+      _id: tokenDoc?.user?._id || "anonymous",
+    };
+  };
+
+  io.use(async (socket, next) => {
+    const userData = await getUserData(socket);
+
+    if (userData) {
+      socket.handshake.data = {
+        userId: userData.userId,
+      };
+
+      return next();
+    }
+
+    return next(new Error("token is invalid"));
+  });
+
+  io.on("connection", (client) => {
+    client.on("subscribe", (roomId) => {
+      const { userId } = client.handshake.data;
+      const hasAccessToRoom = true; // Customize this
+
+      if (hasAccessToRoom) {
+        client.join(roomId);
+      }
+    });
+
+    client.on("unsubscribe", (roomId) => {
+      client.leave(roomId);
+    });
+  });
+
+  console.log(`Socket.io server is started on app instance`);
+};
+```
+
+## Emitting events
+
+Use the `ioEmitter` to send events from anywhere in your app:
+
+```javascript src/ioEmitter.js
+import config from 'app-config';
+import { Emitter } from '@socket.io/redis-emitter';
+import { createClient } from 'redis';
+
+const redisClient = createClient({ url: config.redis.url });
+const emitter = new Emitter(redisClient);
+
+export default emitter;
+```
+
+## Real-time patterns
+
+<AccordionGroup>
+  <Accordion title="Emit on database changes">
+    Use event handlers to push updates:
+
+    ```javascript src/resources/tasks/handlers/realtime.js
+    import db from 'db';
+    import ioEmitter from 'ioEmitter';
+
+    const taskService = db.services.tasks;
+
+    taskService.on('created', async ({ doc }) => {
+      ioEmitter.to(`project-${doc.project._id}`).emit('task:created', doc);
+    });
+
+    taskService.on('updated', async ({ doc }) => {
+      ioEmitter.to(`project-${doc.project._id}`).emit('task:updated', doc);
+    });
+
+    taskService.on('removed', async ({ doc }) => {
+      ioEmitter.to(`project-${doc.project._id}`).emit('task:removed', { 
+        _id: doc._id 
+      });
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="User-specific notifications">
+    ```javascript src/resources/notifications/handlers/realtime.js
+    import db from 'db';
+    import ioEmitter from 'ioEmitter';
+
+    const notificationService = db.services.notifications;
+
+    notificationService.on('created', async ({ doc }) => {
+      // Send to specific user
+      ioEmitter.to(`user-${doc.user._id}`).emit('notification', doc);
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Broadcast to all users">
+    ```javascript
+    import ioEmitter from 'ioEmitter';
+
+    export const handler = async (ctx) => {
+      const announcement = await announcementService.create({
+        ...ctx.validatedData,
+      });
+
+      // Broadcast to everyone
+      ioEmitter.emit('announcement', announcement);
+
+      return announcement;
+    };
+    ```
+  </Accordion>
+
+  <Accordion title="Typing indicators">
+    ```javascript src/resources/messages/endpoints/typing.js
+    import { z } from 'zod';
+    import ioEmitter from 'ioEmitter';
+    import isAuthorized from 'middlewares/isAuthorized';
+
+    export const handler = async (ctx) => {
+      const { conversationId } = ctx.validatedData;
+
+      ioEmitter.to(`conversation-${conversationId}`).emit('user:typing', {
+        user: ctx.state.user,
+        conversationId,
+      });
+
+      return { success: true };
+    };
+
+    export const middlewares = [isAuthorized];
+    export const requestSchema = z.object({
+      conversationId: z.string(),
+    });
+    export const endpoint = { method: 'POST', url: '/typing' };
+    ```
+  </Accordion>
+
+  <Accordion title="Presence (online/offline)">
+    ```javascript src/socketIo.js
+    io.on("connection", (client) => {
+      const { userId } = client.handshake.data;
+
+      // User connected
+      ioEmitter.emit('user:online', { userId });
+
+      client.on('disconnect', () => {
+        // User disconnected
+        ioEmitter.emit('user:offline', { userId });
+      });
+
+      client.on("subscribe", (roomId) => {
+        client.join(roomId);
+      });
+
+      client.on("unsubscribe", (roomId) => {
+        client.leave(roomId);
+      });
+    });
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Client connection
+
+<CodeGroup>
+```javascript React
+import { io } from 'socket.io-client';
+import { useEffect, useState } from 'react';
+
+const socket = io('https://api.example.com', {
+  withCredentials: true, // Send cookies
+});
+
+function TaskList({ projectId }) {
+  const [tasks, setTasks] = useState([]);
+
+  useEffect(() => {
+    // Subscribe to project room
+    socket.emit('subscribe', `project-${projectId}`);
+
+    // Listen for task updates
+    socket.on('task:created', (task) => {
+      setTasks(prev => [...prev, task]);
+    });
+
+    socket.on('task:updated', (task) => {
+      setTasks(prev => prev.map(t => 
+        t._id === task._id ? task : t
+      ));
+    });
+
+    socket.on('task:removed', ({ _id }) => {
+      setTasks(prev => prev.filter(t => t._id !== _id));
+    });
+
+    return () => {
+      socket.emit('unsubscribe', `project-${projectId}`);
+      socket.off('task:created');
+      socket.off('task:updated');
+      socket.off('task:removed');
+    };
+  }, [projectId]);
+
+  return (
+    <div>
+      {tasks.map(task => (
+        <div key={task._id}>{task.title}</div>
+      ))}
+    </div>
+  );
+}
+```
+
+```javascript Vanilla JS
+import { io } from 'socket.io-client';
+
+const socket = io('https://api.example.com', {
+  withCredentials: true,
+});
+
+// Connect to user's personal room
+socket.emit('subscribe', `user-${userId}`);
+
+// Listen for notifications
+socket.on('notification', (notification) => {
+  console.log('New notification:', notification);
+  showNotificationBadge();
+});
+
+// Listen for task updates
+socket.on('task:updated', (task) => {
+  updateTaskInUI(task);
+});
+```
+
+```javascript Node.js client
+import { io } from 'socket.io-client';
+
+const socket = io('https://api.example.com', {
+  extraHeaders: {
+    'Authorization': `Bearer ${token}`
+  }
+});
+
+socket.on('connect', () => {
+  console.log('Connected');
+});
+
+socket.on('task:created', (task) => {
+  console.log('New task:', task);
+});
+```
+</CodeGroup>
+
+## Room patterns
+
+Rooms organize connections by context:
+
+| Room pattern | Use case | Example |
+|--------------|----------|----------|
+| `user-{id}` | User-specific updates | Notifications, settings |
+| `project-{id}` | Project updates | Tasks, comments |
+| `conversation-{id}` | Chat messages | Messages, typing |
+| `global` | App-wide broadcasts | Announcements, maintenance |
+
+## Access control
+
+Restrict room access based on permissions:
+
+```javascript src/socketIo.js
+function checkAccessToRoom(roomId, data) {
+  const [roomType, id] = roomId.split("-");
+
+  switch (roomType) {
+    case "user":
+      return id === data.userId;
+    case "project":
+      return hasProjectAccess(data.userId, id);
+    case "conversation":
+      return hasConversationAccess(data.userId, id);
+    default:
+      return true;
+  }
+}
+
+io.on("connection", (client) => {
+  client.on("subscribe", async (roomId) => {
+    const { userId } = client.handshake.data;
+    const hasAccess = await checkAccessToRoom(roomId, { userId });
+
+    if (hasAccess) {
+      client.join(roomId);
+    } else {
+      client.emit('error', { message: 'Access denied' });
+    }
+  });
+});
+```
+
+## Scaling with Redis
+
+The Redis adapter enables horizontal scaling. Multiple server instances share the same Socket.io state:
+
+```
+┌─────────┐     ┌─────────┐     ┌─────────┐
+│ Server 1│────▶│  Redis  │◀────│ Server 2│
+└─────────┘     └─────────┘     └─────────┘
+     │                               │
+  Clients                         Clients
+```
+
+Events emitted on Server 1 reach clients on Server 2.
+
+## Performance tips
+
+<AccordionGroup>
+  <Accordion title="Filter events before emitting">
+    Only emit relevant data:
+
+    ```javascript
+    // Bad - sends all fields
+    taskService.on('updated', async ({ doc }) => {
+      ioEmitter.to(`project-${doc.project._id}`).emit('task:updated', doc);
+    });
+
+    // Good - sends only what changed
+    import ifUpdated from 'helpers/db/ifUpdated';
+
+    taskService.on('updated', ifUpdated(['status'], async ({ doc, prevDoc }) => {
+      ioEmitter.to(`project-${doc.project._id}`).emit('task:status', {
+        _id: doc._id,
+        status: doc.status,
+      });
+    }));
+    ```
+  </Accordion>
+
+  <Accordion title="Batch updates">
+    Instead of emitting on every change, batch updates:
+
+    ```javascript
+    let pendingUpdates = [];
+    let timeout = null;
+
+    taskService.on('updated', async ({ doc }) => {
+      pendingUpdates.push(doc);
+
+      if (timeout) clearTimeout(timeout);
+
+      timeout = setTimeout(() => {
+        ioEmitter.to(`project-${doc.project._id}`).emit('tasks:batch', pendingUpdates);
+        pendingUpdates = [];
+      }, 100);
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Use specific rooms">
+    ```javascript
+    // Bad - broadcasts to everyone
+    ioEmitter.emit('task:updated', task);
+
+    // Good - sends to specific room
+    ioEmitter.to(`project-${task.project._id}`).emit('task:updated', task);
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Debugging
+
+Enable Socket.io debug logs:
+
+```bash
+DEBUG=socket.io:* npm start
+```
+
+Log all events:
+
+```javascript src/socketIo.js
+io.on("connection", (client) => {
+  console.log('Client connected:', client.id);
+
+  client.onAny((event, ...args) => {
+    console.log('Event received:', event, args);
+  });
+
+  client.on('disconnect', (reason) => {
+    console.log('Client disconnected:', client.id, reason);
+  });
+});
+```
+
+## Testing real-time features
+
+```javascript
+import { io } from 'socket.io-client';
+import { createServer } from 'http';
+
+test('emits task updates to project room', async () => {
+  const server = createServer();
+  const socket = io(`http://localhost:3000`, {
+    extraHeaders: { 'Authorization': `Bearer ${token}` }
+  });
+
+  await new Promise(resolve => socket.on('connect', resolve));
+
+  socket.emit('subscribe', `project-${projectId}`);
+
+  const taskPromise = new Promise(resolve => {
+    socket.on('task:created', resolve);
+  });
+
+  await taskService.create({ 
+    title: 'Test',
+    project: { _id: projectId } 
+  });
+
+  const task = await taskPromise;
+  expect(task.title).toBe('Test');
+
+  socket.disconnect();
+});
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Event handlers" icon="bolt" href="/guides/event-handlers">
+    Trigger real-time updates on database changes
+  </Card>
+  <Card title="Background jobs" icon="clock" href="/guides/background-jobs">
+    Process tasks asynchronously with BullMQ
+  </Card>
+</CardGroup>

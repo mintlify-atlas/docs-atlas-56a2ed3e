@@ -1,0 +1,498 @@
+---
+title: Database services
+description: Auto-generated MongoDB services with validation, events, and automatic field management
+---
+
+## Overview
+
+Hive automatically generates database services for each schema in your resources. Services provide a complete CRUD API with built-in validation, event emitters, and automatic timestamp management.
+
+```javascript starter/src/db.js
+import { connect } from "lib/node-mongo";
+import config from "app-config";
+
+const db = connect(config.mongoUri);
+
+db.services[schemaName] = db.createService(`${resourceName}`, {
+  validate: (obj) => {
+    return { value: schema.parse(obj) };
+  },
+  secureFields: secureFields,
+});
+```
+
+## Service creation
+
+Services are created automatically during database initialization for each schema in your resources.
+
+### Service options
+
+<ParamField path="validate" type="function" default="undefined">
+  Validation function that uses Zod schema to validate documents before operations
+</ParamField>
+
+<ParamField path="secureFields" type="string[]" default="['verySecureField']">
+  Array of field names to exclude from query results by default (e.g., passwords)
+</ParamField>
+
+<ParamField path="addCreatedOnField" type="boolean" default="true">
+  Automatically add `createdOn` timestamp to new documents
+</ParamField>
+
+<ParamField path="addUpdatedOnField" type="boolean" default="true">
+  Automatically add `updatedOn` timestamp when documents are modified
+</ParamField>
+
+<ParamField path="useStringId" type="boolean" default="true">
+  Use string-based `_id` fields instead of MongoDB ObjectId
+</ParamField>
+
+<ParamField path="emitter" type="EventEmitter" default="new EventEmitter()">
+  Custom event emitter for service events (created, updated, removed)
+</ParamField>
+
+## Create operations
+
+Create one or multiple documents with automatic validation and timestamp generation.
+
+### Create single document
+
+```javascript
+const user = await db.services.users.create({
+  email: "user@example.com",
+  fullName: "John Doe",
+  password: "hashed_password"
+});
+```
+
+<ResponseField name="_id" type="string">
+  Auto-generated unique identifier
+</ResponseField>
+
+<ResponseField name="createdOn" type="string">
+  ISO 8601 timestamp of document creation
+</ResponseField>
+
+### Create multiple documents
+
+```javascript
+const users = await db.services.users.create([
+  { email: "user1@example.com", fullName: "Alice" },
+  { email: "user2@example.com", fullName: "Bob" }
+]);
+```
+
+<Note>
+When creating multiple documents, an array is returned. Single document creation returns the document object directly.
+</Note>
+
+### Include secure fields
+
+```javascript
+const user = await db.services.users.create(
+  { email: "user@example.com", password: "secret" },
+  { isIncludeSecureFields: true }
+);
+```
+
+<ParamField path="options.isIncludeSecureFields" type="boolean" default="false">
+  Include fields marked as secure in the response
+</ParamField>
+
+## Update operations
+
+Update documents using functional updates with automatic validation.
+
+### Update single document
+
+```javascript
+const updated = await db.services.users.updateOne(
+  { _id: userId },
+  (user) => {
+    user.fullName = "Jane Doe";
+    user.avatarUrl = "https://example.com/avatar.jpg";
+    return user;
+  }
+);
+```
+
+<ParamField path="query" type="object" required>
+  MongoDB query to find the document to update
+</ParamField>
+
+<ParamField path="updateFn" type="function" required>
+  Function that receives the document, modifies it, and returns the updated version
+</ParamField>
+
+<ParamField path="options.session" type="ClientSession">
+  MongoDB session for transaction support
+</ParamField>
+
+<ParamField path="options.isIncludeSecureFields" type="boolean" default="false">
+  Include secure fields in the response
+</ParamField>
+
+<Warning>
+The `updateFn` must be a function. Passing a plain object will throw a `MongoServiceError` with code `INVALID_ARGUMENT`.
+</Warning>
+
+### Update multiple documents
+
+```javascript
+const updated = await db.services.users.updateMany(
+  { status: "pending" },
+  (user) => {
+    user.status = "active";
+    return user;
+  }
+);
+```
+
+<ResponseField name="updatedOn" type="string">
+  ISO 8601 timestamp automatically added to all updated documents
+</ResponseField>
+
+## Read operations
+
+Query documents with pagination, filtering, and field selection.
+
+### Find multiple documents
+
+```javascript
+const { results, count, pagesCount } = await db.services.users.find(
+  { status: "active" },
+  { page: 1, perPage: 20 }
+);
+```
+
+<ParamField path="query" type="object" default="{}">
+  MongoDB query object for filtering documents
+</ParamField>
+
+<ParamField path="options.page" type="number">
+  Page number for pagination (1-indexed). Enables pagination when > 0
+</ParamField>
+
+<ParamField path="options.perPage" type="number" default="100">
+  Number of results per page
+</ParamField>
+
+<ParamField path="options.sort" type="object">
+  Sort order (e.g., `{ createdOn: -1 }`)
+</ParamField>
+
+<ParamField path="options.fields" type="object">
+  Field projection (e.g., `{ email: 1, fullName: 1 }`)
+</ParamField>
+
+<ResponseField name="results" type="array">
+  Array of matching documents
+</ResponseField>
+
+<ResponseField name="count" type="number">
+  Total count of matching documents (only with pagination)
+</ResponseField>
+
+<ResponseField name="pagesCount" type="number">
+  Total number of pages (only with pagination)
+</ResponseField>
+
+### Find single document
+
+```javascript
+const user = await db.services.users.findOne(
+  { email: "user@example.com" }
+);
+```
+
+<Tip>
+If no document matches the query, `findOne` returns `null` instead of throwing an error.
+</Tip>
+
+### Check if document exists
+
+```javascript
+const exists = await db.services.users.exists({ email: "user@example.com" });
+// Returns true or false
+```
+
+### Without pagination
+
+```javascript
+const { results } = await db.services.users.find({ status: "active" });
+// Returns all matching documents without pagination metadata
+```
+
+## Delete operations
+
+Remove documents and receive the deleted data.
+
+```javascript
+const { results } = await db.services.users.remove({ _id: userId });
+```
+
+<ParamField path="query" type="object" required>
+  MongoDB query to match documents for deletion
+</ParamField>
+
+<ParamField path="options.session" type="ClientSession">
+  MongoDB session for transaction support
+</ParamField>
+
+<ResponseField name="results" type="array">
+  Array of deleted documents
+</ResponseField>
+
+<Warning>
+The `remove` operation is permanent and cannot be undone. Ensure your query is correct before executing.
+</Warning>
+
+## Event system
+
+Services emit events for all lifecycle operations, enabling reactive patterns and side effects.
+
+### Listen to events
+
+```javascript
+db.services.users.on('created', ({ doc }) => {
+  console.log('New user created:', doc._id);
+});
+
+db.services.users.on('updated', ({ doc, prevDoc }) => {
+  console.log('User updated:', doc._id);
+});
+
+db.services.users.on('removed', ({ doc }) => {
+  console.log('User removed:', doc._id);
+});
+```
+
+### Event parameters
+
+<ParamField path="eventName" type="string" required>
+  Event name: `created`, `updated`, or `removed`
+</ParamField>
+
+<ParamField path="handler" type="function" required>
+  Callback function receiving event data
+</ParamField>
+
+### Created event
+
+<ResponseField name="doc" type="object">
+  The newly created document
+</ResponseField>
+
+### Updated event
+
+<ResponseField name="doc" type="object">
+  The document after updates
+</ResponseField>
+
+<ResponseField name="prevDoc" type="object">
+  The document before updates
+</ResponseField>
+
+### Removed event
+
+<ResponseField name="doc" type="object">
+  The deleted document
+</ResponseField>
+
+### Conditional event handlers
+
+```javascript
+db.services.users.onUpdated(['email', 'fullName'], ({ doc, prevDoc }) => {
+  console.log('User contact info changed');
+});
+
+db.services.users.onUpdated({ status: 'active' }, ({ doc, prevDoc }) => {
+  console.log('User activated');
+});
+```
+
+<ParamField path="fieldNames" type="string[] | object">
+  Array of field names to watch, or object with field name and target value
+</ParamField>
+
+<ParamField path="handler" type="function">
+  Callback executed only when specified fields change
+</ParamField>
+
+## Atomic operations
+
+Direct access to MongoDB collection methods for advanced use cases.
+
+```javascript
+await db.services.users.atomic.update(
+  { _id: userId },
+  { $set: { lastLoginAt: new Date() } }
+);
+```
+
+### Available atomic methods
+
+<Accordion title="bulkWrite">
+  Execute multiple write operations in a single batch
+  
+  ```javascript
+  await db.services.users.atomic.bulkWrite([
+    { insertOne: { document: { email: "new@example.com" } } },
+    { updateOne: { filter: { _id: "123" }, update: { $set: { status: "active" } } } }
+  ]);
+  ```
+</Accordion>
+
+<Accordion title="findOneAndUpdate">
+  Find and update a document atomically, returning the updated document
+  
+  ```javascript
+  const updated = await db.services.users.atomic.findOneAndUpdate(
+    { _id: userId },
+    { $set: { status: "active" } },
+    { returnDocument: 'after' }
+  );
+  ```
+</Accordion>
+
+<Accordion title="findOneAndDelete">
+  Find and delete a document atomically, returning the deleted document
+  
+  ```javascript
+  const deleted = await db.services.users.atomic.findOneAndDelete(
+    { _id: userId }
+  );
+  ```
+</Accordion>
+
+<Accordion title="createIndex">
+  Create database indexes for performance optimization
+  
+  ```javascript
+  await db.services.users.atomic.createIndex({ email: 1 }, { unique: true });
+  ```
+</Accordion>
+
+<Accordion title="dropIndex">
+  Remove a specific index
+  
+  ```javascript
+  await db.services.users.atomic.dropIndex('email_1');
+  ```
+</Accordion>
+
+<Warning>
+Atomic operations bypass validation, events, and automatic field management. Use with caution.
+</Warning>
+
+## Utility operations
+
+### Aggregate
+
+```javascript
+const stats = await db.services.users.aggregate([
+  { $match: { status: "active" } },
+  { $group: { _id: "$country", count: { $sum: 1 } } }
+]);
+```
+
+### Count
+
+```javascript
+const count = await db.services.users.count({ status: "active" });
+```
+
+### Distinct
+
+```javascript
+const countries = await db.services.users.distinct('country');
+```
+
+### Collection statistics
+
+```javascript
+const stats = await db.services.users.stats();
+```
+
+## ID generation
+
+Generate unique string IDs compatible with MongoDB.
+
+```javascript
+const newId = db.services.users.generateId();
+// Returns: "507f1f77bcf86cd799439011"
+```
+
+## Service properties
+
+<ResponseField name="name" type="string">
+  Collection name (e.g., `"users"`)
+</ResponseField>
+
+```javascript
+console.log(db.services.users.name); // "users"
+```
+
+## Error handling
+
+```javascript
+try {
+  await db.services.users.updateOne(
+    { _id: "nonexistent" },
+    (user) => user
+  );
+} catch (error) {
+  if (error.code === "NOT_FOUND") {
+    console.log('User not found');
+  }
+}
+```
+
+### Error codes
+
+<ResponseField name="NOT_FOUND" type="string">
+  Document not found for query
+</ResponseField>
+
+<ResponseField name="MORE_THAN_ONE" type="string">
+  Multiple documents found when one expected
+</ResponseField>
+
+<ResponseField name="INVALID_SCHEMA" type="string">
+  Document validation failed
+</ResponseField>
+
+<ResponseField name="INVALID_ARGUMENT" type="string">
+  Invalid argument passed to service method
+</ResponseField>
+
+## Secure fields
+
+Fields marked as secure are automatically excluded from query results unless explicitly requested.
+
+```javascript users.schema.js
+export const secureFields = ['password'];
+
+export default z.object({
+  email: z.string().email(),
+  fullName: z.string(),
+  password: z.string(),
+});
+```
+
+```javascript
+// Password is excluded by default
+const user = await db.services.users.findOne({ email: "user@example.com" });
+console.log(user.password); // undefined
+
+// Include secure fields explicitly
+const userWithPassword = await db.services.users.findOne(
+  { email: "user@example.com" },
+  { isIncludeSecureFields: true }
+);
+console.log(userWithPassword.password); // "hashed_password"
+```
+
+<Note>
+Secure fields are excluded from create, update, and find operations unless `isIncludeSecureFields: true` is passed in options.
+</Note>

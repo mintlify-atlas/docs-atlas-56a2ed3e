@@ -1,0 +1,612 @@
+---
+title: Query patterns and filtering
+description: MongoDB query syntax, filtering strategies, and advanced query patterns for Hive services
+---
+
+## Query basics
+
+Hive services use MongoDB query syntax for filtering documents. All query methods accept a query object as the first parameter.
+
+```javascript
+const { results } = await db.services.users.find({
+  status: "active",
+  role: "admin"
+});
+```
+
+## Exact matches
+
+Match documents where fields equal specific values.
+
+```javascript
+const user = await db.services.users.findOne({
+  email: "user@example.com"
+});
+```
+
+### Multiple field matches
+
+```javascript
+const { results } = await db.services.users.find({
+  status: "active",
+  role: "editor",
+  verified: true
+});
+```
+
+<Note>
+Multiple fields in a query object are combined with AND logic. All conditions must match.
+</Note>
+
+## Comparison operators
+
+Use MongoDB comparison operators for range queries and conditional matching.
+
+### Greater than / less than
+
+```javascript
+const { results } = await db.services.users.find({
+  createdOn: { $gte: "2024-01-01T00:00:00Z" }
+});
+```
+
+<ParamField path="$gt" type="any">
+  Greater than
+</ParamField>
+
+<ParamField path="$gte" type="any">
+  Greater than or equal
+</ParamField>
+
+<ParamField path="$lt" type="any">
+  Less than
+</ParamField>
+
+<ParamField path="$lte" type="any">
+  Less than or equal
+</ParamField>
+
+### Not equal
+
+```javascript
+const { results } = await db.services.users.find({
+  status: { $ne: "deleted" }
+});
+```
+
+### In array
+
+```javascript
+const { results } = await db.services.users.find({
+  role: { $in: ["admin", "moderator", "editor"] }
+});
+```
+
+<ParamField path="$in" type="array">
+  Matches any value in the array
+</ParamField>
+
+<ParamField path="$nin" type="array">
+  Matches none of the values in the array
+</ParamField>
+
+### Range queries
+
+```javascript
+const { results } = await db.services.users.find({
+  age: { $gte: 18, $lte: 65 }
+});
+```
+
+## Logical operators
+
+Combine multiple conditions with logical operators.
+
+### OR queries
+
+```javascript
+const { results } = await db.services.users.find({
+  $or: [
+    { email: "admin@example.com" },
+    { role: "admin" }
+  ]
+});
+```
+
+### AND queries
+
+```javascript
+const { results } = await db.services.users.find({
+  $and: [
+    { status: "active" },
+    { verified: true },
+    { role: { $ne: "guest" } }
+  ]
+});
+```
+
+### NOT queries
+
+```javascript
+const { results } = await db.services.users.find({
+  status: { $not: { $eq: "deleted" } }
+});
+```
+
+### NOR queries
+
+```javascript
+const { results } = await db.services.users.find({
+  $nor: [
+    { status: "deleted" },
+    { status: "banned" }
+  ]
+});
+```
+
+## Existence and type checks
+
+### Check field existence
+
+```javascript
+const { results } = await db.services.users.find({
+  avatarUrl: { $exists: true }
+});
+```
+
+<ParamField path="$exists" type="boolean">
+  Match documents where field exists (true) or doesn't exist (false)
+</ParamField>
+
+### Type checking
+
+```javascript
+const { results } = await db.services.users.find({
+  metadata: { $type: "object" }
+});
+```
+
+## Array queries
+
+Query documents with array fields using specialized operators.
+
+### Match array element
+
+```javascript
+const { results } = await db.services.users.find({
+  tags: "premium"
+});
+```
+
+<Tip>
+Querying an array field with a value matches documents where the array contains that value.
+</Tip>
+
+### Match all array elements
+
+```javascript
+const { results } = await db.services.users.find({
+  tags: { $all: ["premium", "verified"] }
+});
+```
+
+### Array size
+
+```javascript
+const { results } = await db.services.users.find({
+  tags: { $size: 3 }
+});
+```
+
+### Element match
+
+```javascript
+const { results } = await db.services.orders.find({
+  items: {
+    $elemMatch: {
+      product: "laptop",
+      quantity: { $gte: 2 }
+    }
+  }
+});
+```
+
+<ParamField path="$elemMatch" type="object">
+  Match documents where at least one array element satisfies all conditions
+</ParamField>
+
+## Nested field queries
+
+Query nested objects using dot notation.
+
+```javascript
+const user = await db.services.users.findOne({
+  "oauth.google.email": "user@gmail.com"
+});
+```
+
+### Nested object matching
+
+```javascript
+const { results } = await db.services.tokens.find({
+  "user._id": userId
+});
+```
+
+<Note>
+Nested field queries require quotes around the field path when using dot notation.
+</Note>
+
+## Regular expressions
+
+Perform pattern matching with regular expressions.
+
+### Case-insensitive search
+
+```javascript
+const { results } = await db.services.users.find({
+  email: { $regex: "example.com$", $options: "i" }
+});
+```
+
+### Pattern matching
+
+```javascript
+const { results } = await db.services.users.find({
+  fullName: { $regex: "^John" }
+});
+```
+
+<ParamField path="$regex" type="string">
+  Regular expression pattern
+</ParamField>
+
+<ParamField path="$options" type="string">
+  Regex options: `i` (case-insensitive), `m` (multiline), `x` (verbose), `s` (dotall)
+</ParamField>
+
+<Warning>
+Regular expression queries cannot use indexes efficiently. Consider full-text search for better performance.
+</Warning>
+
+## Pagination
+
+Implement pagination with page-based or offset-based approaches.
+
+### Page-based pagination
+
+```javascript
+const { results, count, pagesCount } = await db.services.users.find(
+  { status: "active" },
+  { page: 2, perPage: 20 }
+);
+```
+
+<ResponseField name="pagesCount" type="number">
+  Total number of pages based on perPage setting
+</ResponseField>
+
+<ResponseField name="count" type="number">
+  Total number of matching documents
+</ResponseField>
+
+<ResponseField name="results" type="array">
+  Current page results
+</ResponseField>
+
+### Offset-based pagination
+
+```javascript
+const { results } = await db.services.users.find(
+  { status: "active" },
+  { skip: 40, limit: 20 }
+);
+```
+
+<ParamField path="skip" type="number">
+  Number of documents to skip
+</ParamField>
+
+<ParamField path="limit" type="number">
+  Maximum number of documents to return
+</ParamField>
+
+### Load all results
+
+```javascript
+const { results } = await db.services.users.find({ status: "active" });
+// Returns all matching documents without pagination
+```
+
+<Note>
+When no page is specified, all matching documents are returned without count or pagesCount metadata.
+</Note>
+
+## Sorting
+
+Order query results by one or multiple fields.
+
+### Single field sort
+
+```javascript
+const { results } = await db.services.users.find(
+  {},
+  { sort: { createdOn: -1 } }
+);
+```
+
+<ParamField path="sort" type="object">
+  Sort specification: `1` for ascending, `-1` for descending
+</ParamField>
+
+### Multiple field sort
+
+```javascript
+const { results } = await db.services.users.find(
+  {},
+  { sort: { status: 1, createdOn: -1 } }
+);
+```
+
+## Field projection
+
+Select specific fields to include or exclude from results.
+
+### Include specific fields
+
+```javascript
+const { results } = await db.services.users.find(
+  {},
+  { fields: { email: 1, fullName: 1 } }
+);
+```
+
+### Exclude specific fields
+
+```javascript
+const { results } = await db.services.users.find(
+  {},
+  { fields: { password: 0, oauth: 0 } }
+);
+```
+
+<ParamField path="fields" type="object">
+  Field projection: `1` to include, `0` to exclude. Cannot mix inclusion and exclusion except for `_id`.
+</ParamField>
+
+<Warning>
+You cannot mix field inclusion and exclusion in the same query, except when excluding `_id`.
+</Warning>
+
+## Advanced patterns
+
+### Find by ID array
+
+```javascript
+const userIds = ["id1", "id2", "id3"];
+const { results } = await db.services.users.find({
+  _id: { $in: userIds }
+});
+```
+
+### Find with fallback
+
+```javascript
+const user = await db.services.users.findOne({ email }) ||
+             await db.services.users.findOne({ username });
+```
+
+### Count with filter
+
+```javascript
+const activeCount = await db.services.users.count({
+  status: "active",
+  createdOn: { $gte: "2024-01-01T00:00:00Z" }
+});
+```
+
+### Distinct values
+
+```javascript
+const countries = await db.services.users.distinct('country');
+// Returns: ["US", "UK", "CA", ...]
+```
+
+### Exists check
+
+```javascript
+const exists = await db.services.users.exists({
+  email: "user@example.com"
+});
+// Returns: true or false
+```
+
+<Tip>
+Use `exists()` instead of `count()` when you only need to know if a document exists. It's more efficient.
+</Tip>
+
+## Aggregation pipelines
+
+Perform complex data transformations with aggregation pipelines.
+
+### Group and count
+
+```javascript
+const usersByCountry = await db.services.users.aggregate([
+  { $match: { status: "active" } },
+  { $group: { _id: "$country", count: { $sum: 1 } } },
+  { $sort: { count: -1 } }
+]);
+```
+
+### Project and reshape
+
+```javascript
+const simplified = await db.services.users.aggregate([
+  { $project: { name: "$fullName", email: 1 } }
+]);
+```
+
+### Lookup (join)
+
+```javascript
+const ordersWithUsers = await db.services.orders.aggregate([
+  {
+    $lookup: {
+      from: "users",
+      localField: "userId",
+      foreignField: "_id",
+      as: "user"
+    }
+  }
+]);
+```
+
+### Unwind arrays
+
+```javascript
+const itemized = await db.services.orders.aggregate([
+  { $unwind: "$items" },
+  { $match: { "items.product": "laptop" } }
+]);
+```
+
+<Accordion title="Common aggregation operators">
+  **Stage operators:**
+  - `$match` - Filter documents
+  - `$group` - Group by expression
+  - `$project` - Reshape documents
+  - `$sort` - Sort documents
+  - `$limit` - Limit results
+  - `$skip` - Skip documents
+  - `$lookup` - Join collections
+  - `$unwind` - Deconstruct arrays
+  - `$count` - Count documents
+
+  **Accumulator operators:**
+  - `$sum` - Sum values
+  - `$avg` - Calculate average
+  - `$min` - Minimum value
+  - `$max` - Maximum value
+  - `$push` - Create array of values
+  - `$addToSet` - Create array of unique values
+</Accordion>
+
+## Performance considerations
+
+### Use indexes
+
+```javascript
+await db.services.users.atomic.createIndex(
+  { email: 1 },
+  { unique: true }
+);
+
+await db.services.users.atomic.createIndex(
+  { status: 1, createdOn: -1 }
+);
+```
+
+### Limit fields
+
+```javascript
+// Good: Only fetch needed fields
+const { results } = await db.services.users.find(
+  { status: "active" },
+  { fields: { email: 1, fullName: 1 } }
+);
+
+// Avoid: Fetching all fields when not needed
+const { results } = await db.services.users.find({ status: "active" });
+```
+
+### Use pagination
+
+```javascript
+// Good: Paginated query
+const { results } = await db.services.users.find(
+  {},
+  { page: 1, perPage: 100 }
+);
+
+// Avoid: Loading all documents
+const { results } = await db.services.users.find({});
+```
+
+<Warning>
+Loading all documents without pagination can cause memory issues with large collections.
+</Warning>
+
+### Avoid regex on large collections
+
+```javascript
+// Better: Use exact match or indexed field
+const { results } = await db.services.users.find({
+  email: "user@example.com"
+});
+
+// Avoid: Regex without index
+const { results } = await db.services.users.find({
+  email: { $regex: "example.com" }
+});
+```
+
+## Query building patterns
+
+### Conditional query building
+
+```javascript
+const buildUserQuery = ({ status, role, verified, search }) => {
+  const query = {};
+  
+  if (status) query.status = status;
+  if (role) query.role = role;
+  if (verified !== undefined) query.verified = verified;
+  if (search) {
+    query.$or = [
+      { email: { $regex: search, $options: 'i' } },
+      { fullName: { $regex: search, $options: 'i' } }
+    ];
+  }
+  
+  return query;
+};
+
+const { results } = await db.services.users.find(
+  buildUserQuery({ status: "active", search: "john" })
+);
+```
+
+### Date range queries
+
+```javascript
+const getDateRange = (days) => {
+  const end = new Date();
+  const start = new Date();
+  start.setDate(start.getDate() - days);
+  
+  return {
+    $gte: start.toISOString(),
+    $lte: end.toISOString()
+  };
+};
+
+const { results } = await db.services.users.find({
+  createdOn: getDateRange(30)
+});
+```
+
+### Reusable query fragments
+
+```javascript
+const queries = {
+  active: { status: "active", verified: true },
+  admins: { role: "admin" },
+  recent: { createdOn: { $gte: getDateRange(7) } }
+};
+
+const { results } = await db.services.users.find({
+  ...queries.active,
+  ...queries.recent
+});
+```

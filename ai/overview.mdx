@@ -1,0 +1,174 @@
+---
+title: AI-native development
+description: Build faster with Cursor AI and natural language commands
+---
+
+Hive is designed from the ground up for AI coding assistants. Instead of writing boilerplate code manually, you describe what you want in natural language, and the framework generates production-ready code that follows Hive conventions.
+
+## Why AI-native?
+
+Modern backend development involves repeating the same patterns: creating endpoints, defining schemas, adding validation, setting up handlers. These patterns are perfect for AI to automate.
+
+Hive provides:
+- **Structured commands** that AI understands
+- **Convention-based patterns** that generate consistent code
+- **Type inference** from field names and context
+- **Built-in skills** that teach AI how Hive works
+
+## How it works
+
+Hive ships with Cursor skills and commands in `.cursor/` that teach AI assistants:
+
+1. **Commands** — Natural language directives like `add-endpoint tasks post title, dueOn`
+2. **Skills** — Pattern libraries for schemas, endpoints, handlers, and services
+3. **Conventions** — Rules that ensure generated code follows best practices
+
+<Note>
+When you run `hive init`, these AI configuration files are automatically included in your project.
+</Note>
+
+## Quick example
+
+Here's how you build a tasks API with AI:
+
+<Steps>
+  <Step title="Create the resource">
+    ```
+    add-resource tasks
+    ```
+    
+    AI generates:
+    - Schema file with base fields
+    - Folder structure (endpoints, handlers, methods)
+    - First list endpoint
+  </Step>
+  
+  <Step title="Add endpoints">
+    ```
+    add-endpoint tasks post title, description, dueOn, assignee: { _id, fullName }
+    add-endpoint tasks get page, perPage, status
+    add-endpoint tasks update /:id title, status
+    ```
+    
+    AI infers:
+    - `dueOn` → `z.coerce.date()`
+    - `assignee: { _id, fullName }` → object schema with two fields
+    - `page, perPage` → numbers with defaults
+    - URL params from method aliases
+  </Step>
+  
+  <Step title="Add event handlers">
+    ```
+    add-handler tasks
+    ```
+    
+    AI creates handlers that react to:
+    - `created` — after task is created
+    - `updated` — after task is updated
+    - `removed` — after task is deleted
+  </Step>
+</Steps>
+
+In under a minute, you have a complete, production-ready CRUD API.
+
+## Type inference
+
+AI infers Zod types from field names:
+
+| Field pattern | Inferred type | Example |
+|--------------|---------------|----------|
+| `is*`, `has*`, `can*` | `z.coerce.boolean()` | `isCompleted`, `hasAccess` |
+| `*On`, `*At` | `z.coerce.date()` | `dueOn`, `createdAt` |
+| `page`, `perPage`, `limit`, `*Count` | `z.coerce.number()` | `page`, `itemCount` |
+| `entity: { _id }` | `z.object({ _id: z.string() })` | `user: { _id, fullName }` |
+| Everything else | `z.coerce.string()` | `title`, `description` |
+
+<Tip>
+Type inference removes the need to specify types manually while keeping your schemas type-safe.
+</Tip>
+
+## Convention over configuration
+
+Hive's conventions let AI generate code without asking questions:
+
+**Resource names are always plural:**
+```javascript
+db.services.tasks  // not "task"
+db.services.companies  // not "company"
+```
+
+**URL params come from ctx.params:**
+```javascript
+// Endpoint: PUT /:id
+const { id } = ctx.params;  // Not in requestSchema
+```
+
+**Entity references use objects:**
+```javascript
+// Good
+user: { _id: z.string() }
+
+// Bad
+userId: z.string()
+```
+
+**Updates list fields explicitly:**
+```javascript
+// Good
+return tasksService.updateOne({ _id: id }, (doc) => ({
+  ...doc,
+  title,
+  status,
+  assignee,
+}));
+
+// Bad - don't spread updates
+return tasksService.updateOne({ _id: id }, (doc) => ({
+  ...doc,
+  ...updates,
+}));
+```
+
+## What AI can generate
+
+<CardGroup cols={2}>
+  <Card title="Resources" icon="folder-tree">
+    Complete feature modules with schema, folder structure, and first endpoint
+  </Card>
+  <Card title="Endpoints" icon="route">
+    API routes with inferred validation, middleware, and handler logic
+  </Card>
+  <Card title="Handlers" icon="bolt">
+    Event listeners that react to database changes
+  </Card>
+  <Card title="Middlewares" icon="shield">
+    Access control, validation, and custom request processing
+  </Card>
+  <Card title="Services" icon="plug">
+    External API integrations with standard libraries
+  </Card>
+  <Card title="Schedulers" icon="clock">
+    Cron jobs for background tasks and cleanup
+  </Card>
+</CardGroup>
+
+## Learning from your codebase
+
+As you build, AI learns your patterns:
+
+- **Naming conventions** — How you name fields and functions
+- **Business logic** — Domain-specific rules and validations
+- **Integration patterns** — How you use external services
+- **Error handling** — Your preferred error messages and codes
+
+The more you build, the better AI adapts to your style.
+
+## Next steps
+
+<Card title="Set up Cursor" icon="cursor" href="/ai/cursor-integration">
+  Configure Cursor to use Hive commands and skills
+</Card>
+
+<Card title="View all commands" icon="terminal" href="/ai/commands">
+  Complete reference for all AI commands
+</Card>
